@@ -1,0 +1,21 @@
+# Analysis corrections for the game core media/Module/reco_abnormal.xex. Same rules as overrides.toml: every entry needs
+# its evidence.
+
+[functions]
+
+# Code pointers into unclaimed gaps, stored in data (vtables, callback tables) or built in code (lis/addi:
+# callbacks passed at run time), accepted by tools/pointer_fixpoint.py pass 1: the scratch listing fits
+# in the gap (or continues only into a registered function it branches to: "then the registered tail"),
+# ends in a terminator and reads no register that is undefined at a function entry. The comment says
+# where the pointer is stored ("pointer at") or built ("built at", inside the code range).
+"0x8809ECA0" = { }  # 2 instructions, built at 0x8809F5C0
+"0x8809F7A8" = { }  # 1 instructions, built at 0x880A0230
+"0x880A4DB0" = { }  # 2 instructions, pointer at 0x8825409C (+3 more)
+"0x880B1020" = { }  # 2 instructions, pointer at 0x8825A68C (+3 more)
+"0x880B9C98" = { }  # 2 instructions, built at 0x880BA628
+"0x8816AD30" = { }  # 17 instructions, built at 0x8822C12C
+"0x8817D198" = { }  # 2 instructions, pointer at 0x8826194C (+11 more)
+"0x881B0040" = { }  # 31 instructions, built at 0x881B1158
+"0x881B5C30" = { }  # 19 instructions, built at 0x881B8964
+"0x881C2FD8" = { }  # 22 in the gap, then the registered tail sub_881C3030, built at 0x881C6110
+"0x881E4E88" = { }  # 2 instructions, built at 0x881E5124

@@ -1,0 +1,17 @@
+# Code generation options for speed (masseffect-nx's perf_overrides.toml, docs/optimization-paths.md section 1), for
+# default.xex and every game core. Build-time: they change the generated code, so the A/B is a pair of builds
+# (tools/codegen.ps1 -Perf vs the baseline in out/generated_baseline), not a toml switch.
+#
+# Phase 1 (2026-10-06): the options that need no per-function liveness analysis.
+#   cr/xer/ctr/reserved as locals, skip_msr: masseffect-nx t250 -3.4 % with the reservation local
+#   elide_lr_stores + dform_disp_split + fctiwz_inline ("diet"): masseffect-nx t255 main thread -10 %
+# Not yet: non_volatile_as_local / non_argument_as_local (+9 % / -2 % there) need share_registers marks for every
+# function that reads its caller's registers (funclets, split fragments, stack probes); phase 2, after a scan.
+cr_as_local = true
+xer_as_local = true
+ctr_as_local = true
+reserved_as_local = true
+skip_msr = true
+elide_lr_stores = true
+dform_disp_split = true
+fctiwz_inline = true

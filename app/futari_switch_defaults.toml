@@ -1,0 +1,133 @@
+# Mushihimesama Futari for the Switch: the fixed settings, compiled into the NRO (app/CMakeLists.txt,
+# src/futari_app.h BuiltInConfig) and applied before the SD card's futari.toml, which holds the player's options
+# (app/futari_switch.toml) and may still override any key here for testing (the configs/ folder does).
+# Written by tools/make_enhancement_configs.py from app/src/futari_enhancements.cpp: edit the table there, not this file.
+# Logging and profiling are off: no logs/ folder on the SD card.
+
+# Game
+futari_renderer_native = true
+futari_shader_misses = ""
+
+# No logging, no profiling
+log_level = "off"
+log_to_file = false
+switch_profile_stacks = false
+switch_profile_report = false
+futari_gpu_timestamps = false
+futari_gpu_marks_categories = false
+futari_memory_log_s = 0
+audio_pop_detect = false
+
+# Enhancement masters (false turns every enhancement of that group off)
+futari_cpu_enhancements = true
+futari_noncpu_enhancements = true
+
+# CPU enhancements
+futari_native_deferred_recording = true
+futari_api_draws = true
+futari_api_window_scissor = true
+futari_api_shader_load = true
+futari_api_clear = true
+futari_api_resolve = true
+futari_api_ring_zero_ahead = true
+futari_deferred_native_fast = true
+futari_deferred_native_update = true
+futari_native_fast_pair = true
+futari_native_raw_microcode = true
+futari_native_pm4_fast = true
+futari_native_flat_identity = true
+futari_native_compare_fast = true
+futari_native_fast_copy = true
+futari_native_indices_cache = true
+futari_notify_no_lock = true
+futari_native_fingerprint_mode = 2
+futari_native_upload_memory = 1
+futari_native_dedupe_max_fingerprint = 16384
+futari_native_identity_memo = true
+futari_native_repeated_identity = true
+futari_native_registers_table = true
+futari_native_fast_registers = true
+futari_native_dedupe_vertices = true
+futari_native_dedupe_sample = true
+futari_native_vertices_base_zero = true
+futari_native_indices_neon = true
+futari_native_uploads_help = true
+futari_native_framing_cache = true
+futari_native_util_height_memo = true
+futari_native_key_fast_pass = true
+futari_native_cvars_per_frame = true
+futari_native_pipelines_direct = true
+futari_native_pipeline_between_passes = true
+futari_native_textures_binding_thread = true
+futari_native_textures_pool = true
+futari_native_cache_textures_between_frames = true
+futari_shared_native_cache = true
+futari_native_tile_fast = true
+futari_native_nvk_emission = true
+futari_native_nvk_cbufs = true
+futari_native_nvk_dynamic = true
+futari_native_nvk_preload = true
+futari_native_set4_differences = true
+futari_native_output_no_wait = true
+futari_vblank_sleep_exact = true
+futari_native_diag_reuse = false
+futari_native_diag_memory_upload = false
+thread_wait_blocking = true
+clock_nonblocking = true
+global_lock_spin = 48
+futari_native_memcpy = true
+futari_ring_target_memo = true
+futari_native_memset = true
+futari_frame_wait_sleep = true
+futari_native_lzss = true
+futari_native_hot_82127390 = true
+futari_native_hot_82143450 = true
+futari_native_hot_82127780 = true
+futari_native_hot_82129348 = true
+futari_wait_blocking_ring = true
+futari_shader_note_fast = true
+futari_ring_no_per_draw_copies = true
+futari_native_repack_fast = true
+futari_ring_rectangle_fast = true
+futari_ring_edram_memo = true
+futari_ring_pairing_skip = true
+futari_ring_dedupe_lean = true
+futari_ring_extent_memo = true
+futari_ring_sync_fences = true
+futari_cpu_direct_state = true
+
+# Non-CPU enhancements
+futari_handheld_gpu_boost = true
+futari_native_constants_ubo = true
+futari_gpu_vs_fetch_reorder = true
+futari_gpu_push_once = true
+futari_gpu_blend_skip = true
+futari_gpu_texcoords_unswapped = true
+futari_gpu_no_texture_signs = true
+futari_gpu_identity_remap = true
+futari_gpu_index_base_held = true
+futari_gpu_pass_narrow_end = true
+audio_switch_declick = true
+audio_switch_declick_smooth = true
+audio_switch_declick_predict = true
+futari_gpu_partial_resolve_fresh = true
+futari_gpu_linear_fetch_not_resolved = true
+futari_gpu_prewarm_current_keys = true
+futari_gpu_resolve_draw = true
+futari_gpu_clear_merge = true
+futari_gpu_query_reset_written = true
+futari_native_inv_tex_size = true
+futari_native_vs_pruned_outputs = true
+futari_native_normalized_remap = true
+futari_native_z_early = true
+futari_native_ps_alpha_only = true
+futari_native_no_ps_no_color = true
+futari_native_skip_invisibles = true
+futari_native_skip_cleared_repeated = true
+futari_native_pass_narrow_dependency = true
+futari_native_pass_area_util = true
+futari_native_zcull = true
+futari_native_precise_marks = false
+futari_native_pipelines_prewarm = true
+futari_shaders_index = true
+futari_shaders_preload = true

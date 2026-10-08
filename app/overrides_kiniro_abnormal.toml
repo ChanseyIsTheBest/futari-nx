@@ -1,0 +1,18 @@
+# Analysis corrections for the game core media/Module/kiniro_abnormal.xex. Same rules as overrides.toml: every entry needs
+# its evidence.
+
+[functions]
+
+# Code pointers into unclaimed gaps, stored in data (vtables, callback tables) or built in code (lis/addi:
+# callbacks passed at run time), accepted by tools/pointer_fixpoint.py pass 1: the scratch listing fits
+# in the gap (or continues only into a registered function it branches to: "then the registered tail"),
+# ends in a terminator and reads no register that is undefined at a function entry. The comment says
+# where the pointer is stored ("pointer at") or built ("built at", inside the code range).
+"0x880A7AA0" = { }  # 2 instructions, pointer at 0x88256A3C (+3 more)
+"0x880B3CA0" = { }  # 2 instructions, pointer at 0x8825AA9C (+3 more)
+"0x880BC918" = { }  # 2 instructions, built at 0x880BD2A8
+"0x8817D368" = { }  # 2 instructions, pointer at 0x88261D5C (+11 more)
+"0x881AFB10" = { }  # 31 instructions, built at 0x881B0C28
+"0x881B5710" = { }  # 19 instructions, built at 0x881B843C
+"0x881C2940" = { }  # 22 in the gap, then the registered tail sub_881C2998, built at 0x881C5A80
+"0x881E4CE0" = { }  # 2 instructions, built at 0x881E4F7C

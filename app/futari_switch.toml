@@ -1,0 +1,47 @@
+# Mushihimesama Futari for the Switch: your options. Every other setting is built into the NRO
+# (app/futari_switch_defaults.toml); a key added here overrides it.
+
+# Face buttons by position, as on an Xbox pad (bottom = A).  false = by letter.
+input_xbox_layout = true
+
+# Single Joy-Cons are held sideways, one per player.
+input_joycon_sideways = true
+
+# Button mapping for each player: the Switch buttons that press each Xbox button. Empty = default.
+# Buttons: A B X Y L R ZL ZR PLUS MINUS LSTICK RSTICK UP DOWN LEFT RIGHT SL SR NONE. Example: a = "B, ZR"
+
+[input_p1]
+a = ""
+b = ""
+x = ""
+y = ""
+lb = ""
+rb = ""
+lt = ""
+rt = ""
+start = ""
+back = ""
+ls = ""
+rs = ""
+up = ""
+down = ""
+left = ""
+right = ""
+
+[input_p2]
+a = ""
+b = ""
+x = ""
+y = ""
+lb = ""
+rb = ""
+lt = ""
+rt = ""
+start = ""
+back = ""
+ls = ""
+rs = ""
+up = ""
+down = ""
+left = ""
+right = ""

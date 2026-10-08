@@ -1,0 +1,136 @@
+# Mushihimesama Futari (Switch) - PROFILE: all on, profiler on (the release has it off)
+# Written by tools/make_enhancement_configs.py from app/src/futari_enhancements.cpp: edit the table there, not this file.
+# To use it: copy it to sdmc:/switch/futari-nx/ as futari.toml (the game reads only that name). The startup log line
+# "[enhancements]" says which enhancements were active.
+# Profiler on (see the "Profiler" block): tools/switch_hot_functions.py logs/rex/rex_profile.log ranks
+# the functions; the GPU time per pass category is in the "GPU per Swap" log lines.
+
+log_level = "info"
+log_to_file = true  # the release writes no log (its built-in settings): test configs turn it back on
+
+# The native Vulkan renderer (NVK).
+futari_renderer_native = true
+
+# Safety net: shaders the package lacks are saved to shader_misses/ (send that folder back).
+futari_shader_misses = "shader_misses"
+
+# ---- Enhancement masters (false turns every enhancement of that group off, whatever its own key says) ----
+futari_cpu_enhancements = true
+futari_noncpu_enhancements = true
+
+# ---- CPU enhancements (72) ----
+futari_native_deferred_recording = false                  # ring: a worker records the vkCmd* calls (ME: ring 62 -> 40 %; a fade differed on 4 frames, likely timing: see futari-notes)  (EXPERIMENTAL, off by default; true to try)
+futari_api_draws = false                                  # native Direct3D layer: BeginVertices (every draw) writes the ring's records, no PM4  (EXPERIMENTAL, off by default; true to try)
+futari_api_window_scissor = false                         # native Direct3D layer: the window offset / scissor writer  (EXPERIMENTAL, off by default; true to try)
+futari_api_shader_load = false                            # native Direct3D layer: the draw-time shader load as native code  (EXPERIMENTAL, off by default; true to try)
+futari_api_clear = false                                  # native Direct3D layer: Clear through the records (no PM4 in the real command buffer)  (EXPERIMENTAL, off by default; true to try)
+futari_api_resolve = false                                # native Direct3D layer: Resolve through the records (no PM4 in the real command buffer)  (EXPERIMENTAL, off by default; true to try)
+futari_api_ring_zero_ahead = false                        # native Direct3D layer: ring of records readied with DC ZVA (sa2-nx round 11)  (EXPERIMENTAL, off by default; true to try)
+futari_deferred_native_fast = false                       # ring: deferred queue published in batches  (EXPERIMENTAL, off by default; true to try)
+futari_deferred_native_update = false                     # ring: vkUpdateDescriptorSets queued (~70 worker drains a frame)  (EXPERIMENTAL, off by default; true to try)
+futari_native_fast_pair = true                            # ring: draw/record pairing on dense arrays, no lock
+futari_native_raw_microcode = true                        # ring: shader reload compared on raw guest words
+futari_native_pm4_fast = true                             # ring: constant/fetch register runs with NEON
+futari_native_flat_identity = true                        # ring: shader identity in direct-mapped tables
+futari_native_compare_fast = true                         # ring: ~15 memcmp per draw as inline compares
+futari_native_fast_copy = true                            # ring: vertex copy 64 B/iteration with prefetch
+futari_native_indices_cache = true                        # ring: same-frame index buffer cache
+futari_notify_no_lock = true                              # ring: progress notify without the mutex when nobody waits
+futari_native_fingerprint_mode = 2                        # ring: fingerprints with the A57's CRC32 pair (PC: chained XXH3)
+futari_native_upload_memory = 1                           # ring: upload buffer in CPU-cached memory, flushed before submit (sa2-nx)
+futari_native_dedupe_max_fingerprint = 16384              # ring: large static vertex ranges matched without hashing
+futari_native_identity_memo = true                        # ring: shader identification memo by content
+futari_native_repeated_identity = true                    # ring: identical shader reload keeps its identity
+futari_native_registers_table = true                      # ring: draw records in a fixed table (no map)
+futari_native_fast_registers = true                       # ring: register write runs without per-word checks
+futari_native_dedupe_vertices = true                      # ring: a vertex range uploaded once per frame
+futari_native_dedupe_sample = true                        # ring: dedupe content check on sampled blocks
+futari_native_vertices_base_zero = true                   # ring: one vertex binding, draws shifted by offset
+futari_native_indices_neon = true                         # ring: 16-bit index copy/min/max with NEON
+futari_native_uploads_help = true                         # ring: helps the copy thread instead of waiting
+futari_native_framing_cache = true                        # ring: viewport/scissor reused while unchanged
+futari_native_util_height_memo = true                     # ring: usable target height memo
+futari_native_key_fast_pass = true                        # ring: pass key not rehashed for the same targets
+futari_native_cvars_per_frame = true                      # ring: per-draw cvars read once per frame
+futari_native_pipelines_direct = true                     # ring: direct-mapped pipeline cache
+futari_native_pipeline_between_passes = true              # ring: bound pipeline kept across passes
+futari_native_textures_binding_thread = true              # ring: vkBindImageMemory on a helper thread
+futari_native_textures_pool = true                        # textures in pooled blocks (~1.9 ms per dedicated alloc)
+futari_native_cache_textures_between_frames = true        # ring: sampler caches valid across frames
+futari_shared_native_cache = true                         # ring: shared constants in cached memory (2 us/draw)
+futari_native_tile_fast = true                            # texture untiling in 16-byte steps
+futari_native_nvk_emission = true                         # NVK: each draw command written in one go
+futari_native_nvk_cbufs = true                            # NVK: cbuf flush skipped when nothing is dirty
+futari_native_nvk_dynamic = true                          # NVK: only dirty dynamic-state groups emitted
+futari_native_nvk_preload = true                          # NVK: cache hints for pipeline and shaders
+futari_native_set4_differences = true                     # NVK: descriptor set 4 by differences
+futari_native_output_no_wait = true                       # output through 3 slots, no wait for the previous one
+futari_vblank_sleep_exact = true                          # vblank thread sleeps to the exact vblank
+futari_native_diag_reuse = false                          # diagnostic off: texture reuse counting
+futari_native_diag_memory_upload = false                  # diagnostic off: memory-type write-speed test at start
+thread_wait_blocking = true                               # SDK: waits parked on a wake point, not 1 ms polls
+clock_nonblocking = true                                  # SDK: guest clock update never blocks
+global_lock_spin = 48                                     # SDK: bounded spin on the object-table lock
+futari_native_memcpy = true                               # native: XDK memcpy (all 9 modules) as host memcpy
+futari_ring_target_memo = true                            # ring: render/depth target lookups from a 4-slot memo of their inputs (sa2-nx)
+futari_native_memset = true                               # native: XDK memset (all 9 modules) as host memset (sa2-nx n_827EFEA0)
+futari_frame_wait_sleep = true                            # game thread: sleeps to the next vblank instead of spinning (was 78 % of it)
+futari_native_lzss = true                                 # native: LZSS decompressor of the game cores (27 % of gameMainThr)
+futari_native_hot_82127390 = true                         # native: localized panning sub_82127390 (mixer thread)
+futari_native_hot_82143450 = true                         # native: localized mixer sub_82143450 (mixer thread)
+futari_native_hot_82127780 = true                         # native: localized mixer sub_82127780 (mixer thread)
+futari_native_hot_82129348 = true                         # native: localized mixer sub_82129348 (mixer thread)
+futari_wait_blocking_ring = true                          # game thread: D3D GPU wait sleeps until the ring advances (was ~96 % spin)
+futari_shader_note_fast = true                            # game thread: shader-object notes without a mutex per call (sa2-nx)
+futari_ring_no_per_draw_copies = true                     # ring: no register-file copy / diagnostic formatting per draw
+futari_native_repack_fast = true                          # ring: k_32* sprite vertices converted in cached memory, NEON (PC: 91 % of ring)
+futari_ring_rectangle_fast = true                         # ring: sprite rectangles expanded with 6 copies instead of 18 (PC line profile)
+futari_ring_edram_memo = true                             # ring: EDRAM preparation reused when the render targets did not change (sa2-nx; console ~6 %)
+futari_ring_pairing_skip = true                           # ring: no Draw* record lookups while the game makes none (console 1.7 %)
+futari_ring_dedupe_lean = true                            # ring: no vertex fingerprints that are never used / never hit (0 hits in Futari)
+futari_ring_extent_memo = true                            # ring: no CPU shader interpretation for a VS the estimator rejects by its microcode
+futari_ring_sync_fences = true                            # ring: guest fences end same-frame reuse by address (correctness, banjo-nx)
+futari_cpu_direct_state = true                            # direct renderer step 1: draw state as host records, no PM4 parse (sa2-nx)
+
+# ---- Non-CPU enhancements (34) ----
+futari_handheld_gpu_boost = true                          # handheld GPU 460.8 MHz
+futari_native_constants_ubo = true                        # constants from UBOs (Maxwell constant bank)
+futari_gpu_vs_fetch_reorder = true                        # renderer: vertex shaders whose fetches D3D reordered are identified, not dropped (sa2-nx)
+futari_gpu_push_once = true                               # push constants once per recorded state for set-4 pipelines (sa2-nx sa2_gpu_push_once)
+futari_gpu_blend_skip = true                              # shaders discard transparent pixels whose blend would leave the RGBA8 target unchanged (sa2-nx)
+futari_gpu_texcoords_unswapped = true                     # vertex shaders skip the swapped-texcoord test (never swapped) (sa2-nx)
+futari_gpu_no_texture_signs = true                        # pixel shaders skip the per-fetch sign test when no texture has signs (sa2-nx)
+futari_gpu_identity_remap = true                          # vertex shaders skip the per-input remap test when every input keeps its order (sa2-nx)
+futari_gpu_index_base_held = true                         # VS proven not to read the vertex index: r0 from 0, shared block kept across draws (sa2-nx)
+futari_gpu_pass_narrow_end = true                         # render pass end dependency names its consumers: fewer NVK cache invalidations (sa2-nx)
+audio_switch_declick = true                               # audio: a sound the game cuts or starts mid-wave on a frame edge is faded instead of clicking (Switch)
+audio_switch_declick_smooth = true                        # audio: that fade over 5.3 ms on a raised cosine, not 1.3 ms linear (crackles)
+audio_switch_declick_predict = true                       # audio: steps hidden in busy sound caught too (against the slope)
+futari_gpu_partial_resolve_fresh = true                   # a resolve is never written into a stale resolved texture of an earlier board (Black Label Character Select fix)
+futari_gpu_linear_fetch_not_resolved = true               # a linear texture fetch is never taken for a resolve (sa2-nx's Wild Canyon fix)
+futari_gpu_prewarm_current_keys = true                    # prewarm skips list records whose GPU-round bits this session cannot produce (sa2-nx)
+futari_gpu_resolve_draw = true                            # same-format RGBA8 resolves drawn on the 3D engine, not NVK's copy engine (sa2-nx)
+futari_gpu_clear_merge = true                             # redirected EDRAM clears: one barrier pair, rows merged into rectangles (sa2-nx #8)
+futari_gpu_query_reset_written = true                     # only the written timestamp queries are reset per submission, not 8192 (sa2-nx)
+futari_native_inv_tex_size = true                         # 1/texture size from constants, no size query
+futari_native_vs_pruned_outputs = true                    # vertex shaders write only the outputs the PS reads
+futari_native_normalized_remap = true                     # vertex input remap fast path
+futari_native_z_early = true                              # early depth test for depth-test-only draws
+futari_native_ps_alpha_only = true                        # colourless passes: PS without colour writes
+futari_native_no_ps_no_color = true                       # no fragment stage for colourless draws
+futari_native_skip_invisibles = true                      # draws that cannot change a pixel skipped
+futari_native_skip_cleared_repeated = true                # repeated identical clears skipped
+futari_native_pass_narrow_dependency = true               # narrow render-pass start dependency
+futari_native_pass_area_util = true                       # passes opened over the used rectangle
+futari_native_zcull = true                                # ZCULL plane for depth buffers
+futari_native_precise_marks = false                       # diagnostic off: BOTTOM_OF_PIPE timestamps
+futari_native_pipelines_prewarm = true                    # earlier sessions' pipelines recreated at start
+futari_shaders_index = true                               # shader package by index (SPIR-V on first use)
+futari_shaders_preload = true                             # prewarm list's SPIR-V read in the background
+
+switch_profile_report = true              # the profile file (off in the release's built-in settings)
+# ---- Profiler (on in every config but the verify one; outside the enhancement masters) ----
+switch_profile_stacks = true              # CPU sampler: pc and stack of every busy thread at 1 kHz (rex_profile.log)
+futari_gpu_timestamps = true              # GPU time per submission ("GPU per Swap" lines)
+futari_gpu_marks_categories = true    # GPU time per pass category and the idle gap ("GPU per Swap" lines)
+futari_memory_log_s = 1                   # one "[mem]" line per second

@@ -1,0 +1,20 @@
+# default.xex only: functions that must keep every register in the context (no locals). The three callers of setjmp:
+# the generated code saves ctx before ppc_setjmp and restores it after a longjmp, which does not cover registers kept
+# in C++ locals (needed once non_volatile_as_local is on; harmless before).
+[functions]
+"0x820B8C08" = { share_registers = true }
+"0x820B9978" = { share_registers = true }
+"0x820CDD68" = { share_registers = true }
+
+# Frame pacing without spinning (app/src/native/futari_native_frame.cpp, futari_frame_wait_sleep): a native call at the
+# top of each of sub_8216B148's two busy loops on the frame counter; it sleeps until the vertical-blank callback bumps
+# the counter, then the loop's own compare runs.
+[[midasm_hook]]
+name = "FutariFrameWaitHook"
+address = 0x8216B244
+registers = ["r10", "r11"]
+
+[[midasm_hook]]
+name = "FutariFrameWaitHook2"
+address = 0x8216B2E4
+registers = ["r10", "r11"]

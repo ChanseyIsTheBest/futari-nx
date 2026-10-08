@@ -1,0 +1,91 @@
+# default.xex only: functions that must keep every register in the context (no locals). The three callers of setjmp:
+# the generated code saves ctx before ppc_setjmp and restores it after a longjmp, which does not cover registers kept
+# in C++ locals (needed once non_volatile_as_local is on; harmless before).
+[functions]
+"0x820B8C08" = { share_registers = true }
+"0x820B9978" = { share_registers = true }
+"0x820CDD68" = { share_registers = true }
+# Codegen phase B2 (non_volatile_as_local): readers of a caller non-volatile register and their direct callers
+# (tools/scan_caller_register_reads.py --toml --with-callers; 0x8208D82C is marked in overrides.toml, where its
+# boundary is defined: an entry here would replace that one).
+"0x8207C27C" = { share_registers = true }   # reads r29: ctx.r3.u64 = ctx.r29.u64;
+"0x8207C7E4" = { share_registers = true }   # reads r28, r29: ctx.r11.u64 = REX_LOAD_U32(ctx.r29.u32 + 0);
+"0x8207C90C" = { share_registers = true }   # reads r30: ctx.r3.u64 = ctx.r30.u64;
+"0x8207D32C" = { share_registers = true }   # reads r24: ctx.cr6.compare<int32_t>(ctx.r24.s32, 0, ctx.xer);
+"0x8207D7D8" = { share_registers = true }   # reads r30: ctx.r3.u64 = REX_LOAD_U32(ctx.r30.u32 + 80);
+"0x820800EC" = { share_registers = true }   # reads r28: ctx.cr6.compare<int32_t>(ctx.r28.s32, 0, ctx.xer);
+"0x82080880" = { share_registers = true }   # reads r30: ctx.r3.u64 = ctx.r30.u64;
+"0x82080EE8" = { share_registers = true }   # reads r30: ctx.r3.u64 = ctx.r30.u64;
+"0x82081074" = { share_registers = true }   # reads r27: ctx.r3.u64 = ctx.r27.u64;
+"0x820829BC" = { share_registers = true }   # reads r30: ctx.r3.u64 = ctx.r30.u64;
+"0x82084B58" = { share_registers = true }   # reads r30: ctx.r3.u64 = ctx.r30.u64;
+"0x82084E48" = { share_registers = true }   # reads r31: ctx.r3.u64 = REX_LOAD_U32(ctx.r31.u32 + 148);
+"0x820850E8" = { share_registers = true }   # reads r31: ctx.r25.u64 = REX_LOAD_U32(ctx.r31.u32 + 84);
+"0x82085C3C" = { share_registers = true }   # reads r30: ctx.r3.u64 = ctx.r30.u64;
+"0x8208CCCC" = { share_registers = true }   # reads r22, r28: ctx.cr6.compare<uint32_t>(ctx.r22.u32, 0, ctx.xer);
+"0x8208CFC4" = { share_registers = true }   # reads r26, r30: ctx.cr6.compare<uint32_t>(ctx.r26.u32, 0, ctx.xer);
+"0x8208D880" = { share_registers = true }   # reads r21: ctx.r3.u64 = REX_LOAD_U32(ctx.r21.u32 + 1408);
+"0x8208E550" = { share_registers = true }   # reads r30: ctx.r30.u64 = ctx.r30.u64 ^ ctx.r30.u64;
+"0x8208E8E0" = { share_registers = true }   # reads r30: ctx.r30.u64 = ctx.r30.u64 ^ ctx.r30.u64;
+"0x82090938" = { share_registers = true }   # reads r27, r31: temp.u8 = (~ctx.r31.u32 + ctx.r31.u32 < ~ctx.r31.u32) | (~ctx.r31.u32 + ctx.r31.
+"0x8210AD88" = { share_registers = true }   # reads r31: ctx.cr6.compare<uint32_t>(ctx.r31.u32, 0, ctx.xer);
+"0x8210B048" = { share_registers = true }   # reads r30: ctx.r11.u64 = REX_LOAD_U32(ctx.r30.u32 + 60);
+"0x82119798" = { share_registers = true }   # reads r31: ctx.r4.u64 = REX_LOAD_U32(ctx.r31.u32 + 0);
+"0x8211B2E0" = { share_registers = true }   # reads r31: ctx.r11.u64 = REX_LOAD_U32(ctx.r31.u32 + 4);
+"0x8211B8F8" = { share_registers = true }   # reads r30: ctx.r11.u64 = REX_LOAD_U32(ctx.r30.u32 + 4);
+"0x82138DC0" = { share_registers = true }   # reads r31: ctx.cr6.compare<int32_t>(ctx.r31.s32, 0, ctx.xer);
+"0x8215B3E0" = { share_registers = true }   # reads f14, f15, f16, f17, f18, f19, f20, f21, f22, f23, f24, f25, f26, f27, f28, f29, f30, f31, r14, r15, r16, r17, r18, r19, r20, r21, r22, r23, r24, r25, r26, r27, r28, r29, r30, r31: REX_STORE_U64(ctx.r3.u32 + 0, ctx.f14.u64);
+"0x8215BA40" = { share_registers = true }   # reads r30: ctx.r3.u64 = ctx.r30.u64;
+"0x8215BC28" = { share_registers = true }   # reads r30: ctx.r3.u64 = ctx.r30.u64;
+"0x8215C028" = { share_registers = true }   # reads r29: ctx.r3.u64 = ctx.r29.u64;
+"0x8215DEC4" = { share_registers = true }   # reads r30: ctx.r3.u64 = ctx.r30.u64;
+"0x8215E118" = { share_registers = true }   # reads r30: ctx.r3.u64 = ctx.r30.u64;
+"0x8215E754" = { share_registers = true }   # reads r28, r30: ctx.r11.u64 = REX_LOAD_U32(ctx.r30.u32 + 0);
+"0x8215EE90" = { share_registers = true }   # reads r30: ctx.r11.u64 = REX_LOAD_U32(ctx.r30.u32 + 0);
+"0x8207C0D0" = { share_registers = true }   # calls sub_8207C27C
+"0x8207C670" = { share_registers = true }   # calls sub_8207C7E4
+"0x8207C850" = { share_registers = true }   # calls sub_8207C90C
+"0x8207D1A8" = { share_registers = true }   # calls sub_8207D32C
+"0x8207D6C8" = { share_registers = true }   # calls sub_8207D7D8
+"0x8207FE30" = { share_registers = true }   # calls sub_820800EC
+"0x820807B8" = { share_registers = true }   # calls sub_82080880
+"0x82080D90" = { share_registers = true }   # calls sub_82080EE8
+"0x82080F28" = { share_registers = true }   # calls sub_82081074
+"0x82082860" = { share_registers = true }   # calls sub_820829BC
+"0x82084A80" = { share_registers = true }   # calls sub_82084B58
+"0x82084D80" = { share_registers = true }   # calls sub_82084E48
+"0x82084EB0" = { share_registers = true }   # calls sub_820850E8
+"0x82085B00" = { share_registers = true }   # calls sub_82085C3C
+"0x8208C458" = { share_registers = true }   # calls sub_8208CCCC
+"0x8208CD20" = { share_registers = true }   # calls sub_8208CFC4
+"0x8208D018" = { share_registers = true }   # calls sub_8208D82C, sub_8208D880
+"0x820901E8" = { share_registers = true }   # calls sub_82090938
+"0x82090260" = { share_registers = true }   # calls sub_82090938
+"0x8210B598" = { share_registers = true }   # calls sub_8210B048
+"0x82113408" = { share_registers = true }   # calls sub_8211B8F8
+"0x8211AE00" = { share_registers = true }   # calls sub_82119798
+"0x8211B360" = { share_registers = true }   # calls sub_82119798, sub_8211B2E0
+"0x8211B410" = { share_registers = true }   # calls sub_8211B2E0
+"0x82138E40" = { share_registers = true }   # calls sub_82138DC0
+"0x82139028" = { share_registers = true }   # calls sub_82138DC0
+"0x821390B0" = { share_registers = true }   # calls sub_82138DC0
+"0x8215B958" = { share_registers = true }   # calls sub_8215BA40
+"0x8215BB60" = { share_registers = true }   # calls sub_8215BC28
+"0x8215BD50" = { share_registers = true }   # calls sub_8215C028
+"0x8215DD40" = { share_registers = true }   # calls sub_8215DEC4
+"0x8215DFC0" = { share_registers = true }   # calls sub_8215E118
+"0x8215E628" = { share_registers = true }   # calls sub_8215E754
+"0x8215ED80" = { share_registers = true }   # calls sub_8215EE90
+
+# Frame pacing without spinning (app/src/native/futari_native_frame.cpp, futari_frame_wait_sleep): a native call at the
+# top of each of sub_8216B148's two busy loops on the frame counter; it sleeps until the vertical-blank callback bumps
+# the counter, then the loop's own compare runs.
+[[midasm_hook]]
+name = "FutariFrameWaitHook"
+address = 0x8216B244
+registers = ["r10", "r11"]
+
+[[midasm_hook]]
+name = "FutariFrameWaitHook2"
+address = 0x8216B2E4
+registers = ["r10", "r11"]

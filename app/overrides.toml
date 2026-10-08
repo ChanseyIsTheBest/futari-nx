@@ -1,0 +1,79 @@
+# Mushihimesama Futari-specific analysis corrections for the code generator (default.xex).
+#
+# Every entry needs its evidence (which tool or which log found it). The tools that produce candidates:
+#   tools/find_gaps.py, tools/gap_fixpoint.py   code the automatic discovery left without a function
+#   tools/pointer_scan.py                       code pointers stored in data (vtables, callback tables)
+#   tools/runtime_gap_resolver.py               "Call to invalid or unregistered function" from a game log
+
+# The CRT's setjmp/longjmp (root keys: they must stay outside any table). Recompiled as plain calls, a longjmp would
+# restore r1/r31 from the jmp_buf and then return to its own caller with a foreign stack frame (SA2's fourth boot);
+# with the addresses the generator emits host setjmp/longjmp keyed by the guest jmp_buf. Found by shape
+# (2026-10-05), the only pair in all nine binaries (the game cores have none):
+#   setjmp  0x8215B3E0: optional hook word at 0x821FA4AC (bnectr), then stfd f14-f31 at 0(r3), std r13-r31 at
+#           152(r3), stvlx128 v64.. at 320(r3); 3 callers (sub_820B8C08, sub_820B9978, sub_820CDD68)
+#   longjmp 0x8215AFA0: r7 = r3, unwinds when the buffer holds an SEH registration (+312), then lfd f14-f31 / ld
+#           r13-r31 from the same offsets; 4 callers in the same code (0x820B6xxx-0x820CDxxx)
+# (0x820851EC also restores f14-f31/r14-r31, but from a CONTEXT record in r4 (f14 at +408): the unwinder's.)
+setjmp_address = 0x8215B3E0
+longjmp_address = 0x8215AFA0
+
+[functions]
+# First validation run (rexglue codegen, 2026-10-05): a direct unconditional branch (`b`, a tail call) to each
+# address below, which automatic discovery had not assigned to any function ("target not in any function"; the
+# caller is listed). No sizes imposed: the Discover phase determines each boundary from the PPC code.
+"0x8210B038" = { }  # from 0x8210B044
+"0x820F3C20" = { }  # from 0x820FEE98
+
+# Code pointers into unclaimed gaps, stored in data (vtables, callback tables) or built in code (lis/addi:
+# callbacks passed at run time), accepted by tools/pointer_fixpoint.py pass 1: the scratch listing fits
+# in the gap (or continues only into a registered function it branches to: "then the registered tail"),
+# ends in a terminator and reads no register that is undefined at a function entry. The comment says
+# where the pointer is stored ("pointer at") or built ("built at", inside the code range).
+"0x82061D60" = { }  # 4 instructions, built at 0x82061A38 (+2 more)
+"0x82061D70" = { }  # 4 instructions, built at 0x82061A04 (+13 more)
+"0x82061D80" = { }  # 4 instructions, built at 0x821AB360 (+3 more)
+"0x82063A58" = { }  # 4 instructions, built at 0x821B2228 (+16 more)
+"0x82065A88" = { }  # 4 instructions, built at 0x8218679C (+26 more)
+"0x82065A98" = { }  # 4 instructions, built at 0x821B95B4 (+1 more)
+"0x82065AA8" = { }  # 4 instructions, built at 0x821B8FC8 (+3 more)
+"0x82065AB8" = { }  # 4 instructions, built at 0x821AA6E8 (+5 more)
+"0x82066048" = { }  # 4 instructions, built at 0x821B88B8 (+1 more)
+"0x820662B8" = { }  # 4 instructions, built at 0x821B7990
+"0x820662C8" = { }  # 4 instructions, built at 0x821A9B14 (+7 more)
+"0x820662D8" = { }  # 4 instructions, built at 0x821B7A10
+"0x82068808" = { }  # 4 instructions, built at 0x821AA884 (+1 more)
+"0x82068818" = { }  # 4 instructions, built at 0x821A9A2C
+"0x82068828" = { }  # 4 instructions, built at 0x821A9E54 (+2 more)
+"0x82068838" = { }  # 4 instructions, built at 0x821AA434
+"0x8208D82C" = { }  # 4 instructions, pointer at 0x82051CA8
+"0x820E8040" = { }  # 6 in the gap, then the registered tail sub_820E8058, pointer at 0x82013F54
+"0x820EDF48" = { }  # 5 instructions, pointer at 0x82014608 (+2 more)
+"0x820FE550" = { }  # 4 instructions, pointer at 0x82015798
+"0x8210E770" = { }  # 2 instructions, pointer at 0x820161BC (+4 more)
+"0x8210E778" = { }  # 2 instructions, pointer at 0x820161B8 (+4 more)
+"0x8210E780" = { }  # 2 instructions, pointer at 0x820161F4
+"0x8210E790" = { }  # 2 instructions, pointer at 0x820161DC (+4 more)
+"0x8210E798" = { }  # 2 instructions, pointer at 0x820161C4 (+4 more)
+"0x8210E7A0" = { }  # 2 instructions, pointer at 0x820161A8 (+2 more)
+"0x82113468" = { }  # 2 instructions, pointer at 0x820161E4 (+4 more)
+"0x82113470" = { }  # 2 instructions, pointer at 0x820161EC (+4 more)
+"0x82113478" = { }  # 2 instructions, pointer at 0x820161AC (+4 more)
+"0x82113480" = { }  # 2 instructions, pointer at 0x820161CC (+4 more)
+"0x82113488" = { }  # 2 instructions, pointer at 0x8201658C
+"0x82113498" = { }  # 2 instructions, pointer at 0x820161D0 (+4 more)
+"0x821134A0" = { }  # 2 instructions, pointer at 0x820161B0 (+4 more)
+"0x821134A8" = { }  # 2 instructions, pointer at 0x82016570 (+1 more)
+"0x82113720" = { }  # 2 instructions, pointer at 0x820165FC
+"0x82113730" = { }  # 2 instructions, pointer at 0x820161C8 (+4 more)
+"0x82113738" = { }  # 2 instructions, pointer at 0x82016540 (+1 more)
+"0x82113DF0" = { }  # 2 instructions, pointer at 0x820166B4
+"0x82116C28" = { }  # 11 in the gap, then the registered tail sub_82116C54, pointer at 0x820168A4
+"0x82118178" = { }  # 6 instructions, pointer at 0x820169BC
+"0x82118D40" = { }  # 2 instructions, pointer at 0x82016950
+"0x82139260" = { }  # 2 instructions, pointer at 0x8201B580 (+1 more)
+"0x82169B08" = { }  # 1 instructions, pointer at 0x820514E4 (+1 more)
+"0x82199E18" = { }  # 1 instructions, pointer at 0x82050E0C
+"0x821B9E78" = { }  # 5 instructions, pointer at 0x820502FC
+"0x821BE228" = { }  # 1 instructions, pointer at 0x820500BC (+1 more)
+"0x821BE398" = { }  # 8 instructions, pointer at 0x8204FDF0 (+27 more)
+"0x821CB190" = { }  # 1 instructions, built at 0x821CB1F0

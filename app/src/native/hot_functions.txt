@@ -1,0 +1,17 @@
+# Localized copies (tools/localize_native.py): <module> <ADDR> [callee] <what>
+# Console profile 2026-10-06 (F build era), the audio mixer thread's hottest functions after the game thread's spin.
+default 821536C0 audio mix (VMX), 15 % of the mixer thread
+default 82127390 panning / volume vectors, 6 %
+default 821528D0 mixer routine, 6 %
+default 82143450 mixer routine, 5.5 %
+default 8212BE20 linear-interpolation resampler, 4.8 %
+default 821268F8 mixer routine, 4.5 %
+default 82127780 mixer routine, 2 %
+default 82129348 mixer routine, 1.6 %
+# Leaf callees: localized for the guard's record mode only (no hook of their own)
+default 8207DA20 callee small fill helper
+default 8207AE60 callee helper of 821536C0
+default 8207AF40 callee helper of 821536C0
+default 8215A9F0 callee helper of 8212BE20
+default 82140630 callee helper of 82143450
+default 82140700 callee helper of 82143450

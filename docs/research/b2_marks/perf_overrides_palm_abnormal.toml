@@ -1,0 +1,30 @@
+# Codegen phase B2 (2026-10-07): with non_volatile_as_local (perf_overrides.toml) every function keeps r14-r31 in C++
+# locals. These functions read a non-volatile register their caller set (split fragments, funclets) or call one
+# directly: they keep every register in the context. Written by
+#   python tools/scan_caller_register_reads.py --toml --with-callers
+# over out/generated_baseline (every register in ctx). Do not edit by hand: re-run the scan.
+[functions]
+"0x88080AE4" = { share_registers = true }   # reads r24: ctx.cr6.compare<int32_t>(ctx.r24.s32, 0, ctx.xer);
+"0x88082A28" = { share_registers = true }   # reads r30: ctx.r3.u64 = REX_LOAD_U32(ctx.r30.u32 + 80);
+"0x88082FA4" = { share_registers = true }   # reads r30: ctx.r3.u64 = ctx.r30.u64;
+"0x880834C8" = { share_registers = true }   # reads r30: ctx.r3.u64 = ctx.r30.u64;
+"0x88083F78" = { share_registers = true }   # reads r31: ctx.r3.u64 = REX_LOAD_U32(ctx.r31.u32 + 148);
+"0x88084354" = { share_registers = true }   # reads r28, r29: ctx.r11.u64 = REX_LOAD_U32(ctx.r29.u32 + 0);
+"0x88084588" = { share_registers = true }   # reads r30: ctx.r3.u64 = ctx.r30.u64;
+"0x88084714" = { share_registers = true }   # reads r27: ctx.r3.u64 = ctx.r27.u64;
+"0x88084A54" = { share_registers = true }   # reads r30: ctx.r3.u64 = ctx.r30.u64;
+"0x88095CC4" = { share_registers = true }   # reads r22, r28: ctx.cr6.compare<uint32_t>(ctx.r22.u32, 0, ctx.xer);
+"0x88095FBC" = { share_registers = true }   # reads r26, r30: ctx.cr6.compare<uint32_t>(ctx.r26.u32, 0, ctx.xer);
+"0x88097610" = { share_registers = true }   # reads r30: ctx.r30.u64 = ctx.r30.u64 ^ ctx.r30.u64;
+"0x880979A0" = { share_registers = true }   # reads r30: ctx.r30.u64 = ctx.r30.u64 ^ ctx.r30.u64;
+"0x88080960" = { share_registers = true }   # calls sub_88080AE4
+"0x88082918" = { share_registers = true }   # calls sub_88082A28
+"0x88082E48" = { share_registers = true }   # calls sub_88082FA4
+"0x88083370" = { share_registers = true }   # calls sub_880834C8
+"0x88083EB0" = { share_registers = true }   # calls sub_88083F78
+"0x880841E0" = { share_registers = true }   # calls sub_88084354
+"0x880844B0" = { share_registers = true }   # calls sub_88084588
+"0x880845C8" = { share_registers = true }   # calls sub_88084714
+"0x88084918" = { share_registers = true }   # calls sub_88084A54
+"0x88095450" = { share_registers = true }   # calls sub_88095CC4
+"0x88095D18" = { share_registers = true }   # calls sub_88095FBC

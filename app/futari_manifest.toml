@@ -1,0 +1,75 @@
+# ReXGlue recompilation manifest for Mushihimesama Futari Ver 1.5 (Xbox 360, CAVE, title 435A07D7).
+#
+# Run tools/codegen.ps1: it calls `rexglue codegen futari_manifest.toml`. The project name sets the prefix of everything
+# generated: generated/<binary>/futari_{init,pch,funcs}.h, futari_recomp.N.cpp, the CMake target futari_recomp and one
+# shared library (PC) or static module (Switch) per game core, futari_<core>.
+#
+# default.xex ("cave360.exe"): image base 0x82000000, size 0x002B0000, entry point 0x8208A2B8, XEX version 0.0.0.1.
+# It is only the front end (menus, saves, DLC, achievements). Each game mode runs in a game-core DLL from
+# media/Module/, loaded with XexLoadImage when a game starts ("Bootup MODULE_154_3", "MODULE_ARRANGE", ...). All eight
+# cores are built for the same base, 0x88000000, so the game can only ever hold one; the code generator processes
+# them one after another (sdk change in src/codegen/project_recompiler.cpp).
+
+[project]
+name = "futari"
+sdk_version = "0.10.0"
+# Your own game files: the extracted disc (assets/game_root, made by tools/extract_iso.py), with default.xex at its
+# root. Nothing from the game is distributed with this project.
+game_root = "../assets/game_root"
+
+[entrypoint]
+file_path = "../assets/game_root/default.xex"
+out_directory_path = "generated/default"
+# The includes are processed before this table, so whatever is set here overrides what is included.
+#   overrides.toml   written by hand: code the automatic function discovery misses, each with its evidence
+includes = ["overrides.toml", "perf_overrides.toml", "perf_overrides_default.toml"]
+
+# The game cores. Reco/Palm are the two playable characters, normal/abnormal their two styles; hirow and kiniro are
+# the cores of the other modes (to be named once each mode has been booted).
+[[modules]]
+guest_path = "media/Module/palm_normal.xex"
+file_path = "../assets/game_root/media/Module/palm_normal.xex"
+out_directory_path = "generated/palm_normal"
+includes = ["overrides_palm_normal.toml", "perf_overrides.toml"]
+
+[[modules]]
+guest_path = "media/Module/palm_abnormal.xex"
+file_path = "../assets/game_root/media/Module/palm_abnormal.xex"
+out_directory_path = "generated/palm_abnormal"
+includes = ["overrides_palm_abnormal.toml", "perf_overrides.toml"]
+
+[[modules]]
+guest_path = "media/Module/reco_normal.xex"
+file_path = "../assets/game_root/media/Module/reco_normal.xex"
+out_directory_path = "generated/reco_normal"
+includes = ["overrides_reco_normal.toml", "perf_overrides.toml"]
+
+[[modules]]
+guest_path = "media/Module/reco_abnormal.xex"
+file_path = "../assets/game_root/media/Module/reco_abnormal.xex"
+out_directory_path = "generated/reco_abnormal"
+includes = ["overrides_reco_abnormal.toml", "perf_overrides.toml"]
+
+[[modules]]
+guest_path = "media/Module/hirow_normal.xex"
+file_path = "../assets/game_root/media/Module/hirow_normal.xex"
+out_directory_path = "generated/hirow_normal"
+includes = ["overrides_hirow_normal.toml", "perf_overrides.toml"]
+
+[[modules]]
+guest_path = "media/Module/hirow_abnormal.xex"
+file_path = "../assets/game_root/media/Module/hirow_abnormal.xex"
+out_directory_path = "generated/hirow_abnormal"
+includes = ["overrides_hirow_abnormal.toml", "perf_overrides.toml"]
+
+[[modules]]
+guest_path = "media/Module/kiniro_normal.xex"
+file_path = "../assets/game_root/media/Module/kiniro_normal.xex"
+out_directory_path = "generated/kiniro_normal"
+includes = ["overrides_kiniro_normal.toml", "perf_overrides.toml"]
+
+[[modules]]
+guest_path = "media/Module/kiniro_abnormal.xex"
+file_path = "../assets/game_root/media/Module/kiniro_abnormal.xex"
+out_directory_path = "generated/kiniro_abnormal"
+includes = ["overrides_kiniro_abnormal.toml", "perf_overrides.toml"]
