@@ -5,8 +5,7 @@
 # Phase 1 (2026-10-06): the options that need no per-function liveness analysis.
 #   cr/xer/ctr/reserved as locals, skip_msr: masseffect-nx t250 -3.4 % with the reservation local
 #   elide_lr_stores + dform_disp_split + fctiwz_inline ("diet"): masseffect-nx t255 main thread -10 %
-# Not yet: non_volatile_as_local / non_argument_as_local (+9 % / -2 % there) need share_registers marks for every
-# function that reads its caller's registers (funclets, split fragments, stack probes); phase 2, after a scan.
+# Phase 2 (non_volatile_as_local / non_argument_as_local) is at the end of this file (2026-10-14).
 cr_as_local = true
 xer_as_local = true
 ctr_as_local = true
@@ -15,3 +14,67 @@ skip_msr = true
 elide_lr_stores = true
 dform_disp_split = true
 fctiwz_inline = true
+#
+# 2026-10-14 (version 1.0.1): sa2-nx's generator at its 1.0.1 (sdk/src/codegen; with these options unset the generated
+# code is byte for byte what 1.0.0 was built from) and the options of its CPU rounds that are exact by construction,
+# each with a unit test in sdk/tests (tools/win/run_sdk_tests.ps1):
+#   fp_moves_modeless      lfd/stfd forms, stfiwx, fmr, fabs, fnabs, fneg only move bits: no host flush-mode switch
+#                          (an `msr fpcr` on the A57); in VMX mode lfs/stfs convert through any-mode helpers
+#   fp_compares_modeless   fcfid, fctiwz, fctidz, fsel switch nothing; fcmpu / fcmpo / frsp through any-mode helpers
+#                          while VMX mode is current
+#   fp_mode_lookahead      before a scalar float instruction switches, the generator looks at the next instruction that
+#                          needs a mode; fp_mode_lookahead_past_branch = false keeps the any-mode forms where they
+#                          replace a switch for certain (sa2-nx: the bet past a branch lost in mostly scalar code)
+#   fcti_inline            fctid / fctiw / fctidz as frinti + fcvtzs. Also a CORRECTION of the Switch build: simde's
+#                          portable conversion is C round(), halves away from zero, where the 360 and the PC build
+#                          round in the current mode (23 fcvtas in the game code of 1.0.0; sdk/tests/fcti_copy_test.cpp)
+#   fp_copy_pairs          a float copied through a register (lfs then stfs of it) writes the loaded bits: no mode
+#   div_inline             divw / divwu / divd / divdu as sdiv / udiv (AArch64 defines /0 and INT_MIN / -1) and one
+#                          select, instead of guards the compiler keeps as branches
+fp_moves_modeless = true
+fp_compares_modeless = true
+fp_mode_lookahead = true
+fp_mode_lookahead_past_branch = false
+fcti_inline = true
+fp_copy_pairs = true
+div_inline = true
+#
+# 2026-10-19: banjo-nx's codegen round (docs/futari-notes.md, "Banjo's codegen round"), each exact by construction:
+#   rotate_word_shifts     rlwinm / rlwimi with an immediate shift and a mask that does not wrap as the plain 32-bit
+#                          shift, extract or rotate the mask makes of them (one lsl / lsr / ubfiz / ubfx where the
+#                          64-bit rotate of the duplicated word took two or three; sdk/tests/rotate_word_test.cpp)
+#   fp_copy_forwarding     with fp_copy_pairs: a single copied through a register (lfs ... stfs) writes the loaded bits
+#                          in either mode, also with other instructions between and through an fneg / fabs / fnabs of
+#                          the register in place (the sign bit flipped, cleared or set)
+#   dcbt_prefetch          the guest's dcbt / dcbtst hints as host prefetches of the same address (a prefetch never
+#                          faults and changes no value), with banjo-nx's operand fix (dcbt is {CT, RA, RB}: RA + RB)
+rotate_word_shifts = true
+fp_copy_forwarding = true
+dcbt_prefetch = true
+#
+# Phase 2, 2026-10-14 (version 1.0.1): the registers as C++ locals (masseffect-nx, sasrt-nx, banjo-nx and sa2-nx ship
+# both; docs/futari-notes.md, "The CPU rounds of 1.0.1"). Each recompiled function keeps r14-r31, f14-f31 and v14-v31 /
+# v64-v127 (non_volatile_as_local) and r0, r2, r11, r12, f0 and v32-v63 (non_argument_as_local) in C++ locals that
+# start at zero: the compiler keeps them in host registers, and the __savegprlr / __restgprlr helper calls disappear.
+# A value can then no longer cross a call in one of them, so every place where one does was found first:
+#   - tools/read_before_write.py (flow-sensitive; on code generated with non_volatile_as_local and no marks): one real
+#     reader in default.xex, sub_8208D82C (the tail of a function with a dynamic frame: `addi r12,r31,320`), marked
+#     share_registers in perf_overrides_default.toml. Its other reports are values that do not depend on the register
+#     (`xor rX,rX,rX`, `subfe rX,rX,rX`) and the guest setjmp reading cr1-cr7. The game cores: the two `xor` forms.
+#   - tools/non_argument_audit.py (whole program, on code generated without non_argument_as_local): arguments read on
+#     entry are r12 in the SDK's __save* / __rest* helpers (kept in ctx by name), in the MSVC EH funclets (48 in
+#     default.xex, 18 per core: share_registers, the generator marks them from the EH tables) and in the stack probe;
+#     one value returned in r11 by a __finally funclet to its owner (the generated copy-back takes it). With both
+#     options on: no missing hand-over, no value returned without a copy-back, no localized register read before it
+#     is written, in all nine modules.
+# The attempt of 2026-10-07 crashed at boot for two reasons that are both gone: a linear scan had marked 72 + 24
+# functions share_registers, and the three setjmp callers were marked too. A NORMAL function marked share_registers
+# is harmful: its __savegprlr / __restgprlr calls are elided (the gate is global), so it clobbers ctx.r14-r31 and its
+# callers copy the clobbered values back into their locals.
+# non_argument_as_local_keep: functions that keep r0 / r2 / r11 / r12 / f0 / v32-v63 in ctx (their callers hand the
+# values over around the call). Here the game cores' continuation jump (`mr r12,r5; mtctr r4; bctr`: the same CRT
+# function at three addresses in the eight cores; an address that is no function start in a module does nothing
+# there); default.xex's own are in perf_overrides_default.toml (the list is additive).
+non_volatile_as_local = true
+non_argument_as_local = true
+non_argument_as_local_keep = [0x880711C4, 0x880711D4, 0x880811C4]

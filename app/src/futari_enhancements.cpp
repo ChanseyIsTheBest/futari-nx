@@ -65,6 +65,21 @@ REXCVAR_DEFINE_BOOL(futari_handheld_gpu_boost, true, "Futari",
                     "Handheld: GPU 460.8 MHz instead of 384 (memory clock unchanged); docked: no effect")
     .lifecycle(rex::cvar::Lifecycle::kInitOnly);
 
+// sasrt-nx's CPU round of 2026-10-12 (through sa2-nx): build-time work with a run-time side. Compare-and-swap (the
+// game's interlocked operations, tools/guest_cas.py, and the SDK's lock words, rex/thread/atomic.h) without the legacy
+// builtin's trailing `dmb ish` on the A57; off puts the barrier back at run time (sdk/src/core/atomic_posix.cpp).
+REXCVAR_DEFINE_BOOL(futari_cpu_guest_cas_no_barrier, true, "Futari",
+                    "Guest compare-and-swap without the trailing full barrier on the A57 (false = the barrier back)")
+    .lifecycle(rex::cvar::Lifecycle::kInitOnly);
+#if defined(__aarch64__)
+extern "C" unsigned char g_rex_atomic_legacy_barrier;
+#endif
+
+namespace futari::native {
+void CodegenChecksInit();  // src/native/futari_codegen_checks.cpp
+void FormsSelfCheck();     // src/native/futari_forms_selfcheck.cpp
+}
+
 namespace futari::enhancements {
 namespace {
 
@@ -176,6 +191,14 @@ const Entry kTable[] = {
     {"futari_ring_extent_memo", kCpu, "ring: no CPU shader interpretation for a VS the estimator rejects by its microcode", "true", "false"},
     {"futari_ring_sync_fences", kCpu, "ring: guest fences end same-frame reuse by address (correctness, banjo-nx)", "true", "false"},
     {"futari_cpu_direct_state", kCpu, "direct renderer step 1: draw state as host records, no PM4 parse (sa2-nx)", "true", "false"},
+    // ---- CPU: the codegen rounds of 1.0.1 (sasrt-nx / sa2-nx, 2026-10-12): the run-time keys. The build-time steps
+    // have their switches in app/CMakeLists.txt (FUTARI_SWITCH_*, FUTARI_GEN_*) and app/perf_overrides.toml.
+    {"futari_cpu_guest_cas_no_barrier", kCpu, "game code + SDK: compare-and-swap without the trailing dmb ish (A57)", "true", "false"},
+    {"kernel_critsec_pcr_owner", kCpu, "SDK: critical sections take the owner thread from the guest's PCR, no host thread lookup", "true", "false"},
+#if REX_PLATFORM_SWITCH
+    // threading_posix.cpp, which only the Switch build compiles: the key does not exist on the PC.
+    {"thread_signal_skip_idle", kCpu, "SDK: no condition-variable notify (a syscall) for an event or semaphore nobody waits on", "true", "false"},
+#endif
     // ---- non-CPU: GPU work and memory ---------------------------------------------------------------------------
     {"futari_handheld_gpu_boost", kGpu, "handheld GPU 460.8 MHz", "true", "false"},
     {"futari_native_constants_ubo", kGpu, "constants from UBOs (Maxwell constant bank)", "true", "false"},
@@ -191,6 +214,15 @@ const Entry kTable[] = {
     {"audio_switch_declick_smooth", kGpu, "audio: that fade over 5.3 ms on a raised cosine, not 1.3 ms linear (crackles)", "true", "false"},
     {"audio_switch_declick_predict", kGpu, "audio: steps hidden in busy sound caught too (against the slope)", "true", "false"},
     {"futari_gpu_partial_resolve_fresh", kGpu, "a resolve is never written into a stale resolved texture of an earlier board (Black Label Character Select fix)", "true", "false"},
+    // Input lag (2026-10-16; docs/futari-notes.md, "Input lag"): each its own key, the probe's "[latency]" line says
+    // what they do.
+    {"futari_late_input", kGpu, "input lag: the game reads its controllers as late as its frame allows (adaptive)", "true", "false"},
+#if REX_PLATFORM_SWITCH
+    {"futari_vblank_display_sync", kGpu, "input lag / judder: the game's vertical blank follows the display's refresh", "true", "false"},
+    {"futari_vblank_phase_auto", kGpu, "input lag: the game's vertical blank as late after the refresh as the image still makes the next one", "true", "false"},
+    {"futari_renut_vblank_core", kGpu, "Renut renderer: the vblank thread at the render thread's priority on the background core (banjo-nx's display thread), not behind the game thread", "2", "-1"},
+#endif
+    {"futari_native_texture_slots_evict", kGpu, "long sessions: a texture view heap 3/4 full sheds its coldest textures (no black textures after hours)", "true", "false"},
     {"futari_gpu_linear_fetch_not_resolved", kGpu, "a linear texture fetch is never taken for a resolve (sa2-nx's Wild Canyon fix)", "true", "false"},
     {"futari_gpu_prewarm_current_keys", kGpu, "prewarm skips list records whose GPU-round bits this session cannot produce (sa2-nx)", "true", "false"},
     {"futari_gpu_resolve_draw", kGpu, "same-format RGBA8 resolves drawn on the 3D engine, not NVK's copy engine (sa2-nx)", "true", "false"},
@@ -213,6 +245,93 @@ const Entry kTable[] = {
     {"futari_native_pipelines_prewarm", kGpu, "earlier sessions' pipelines recreated at start", "true", "false"},
     {"futari_shaders_index", kGpu, "shader package by index (SPIR-V on first use)", "true", "false"},
     {"futari_shaders_preload", kGpu, "prewarm list's SPIR-V read in the background", "true", "false"},
+    // ---- Renut's renderer (futari_renderer = "renut"; banjo-nx's keys, src/renut_engine/gpu) -------------------------
+    // 2026-10-20: its optimisations under the two masters as well (they read their own keys, which a master off sets
+    // to OFF here). Not rows: its fixes (half-pixel offset, point radii, stencil words, the texture header swizzle,
+    // alpha to mask...), its settings, and banjo-nx's game-specific ones (the fur and light shader lists, fur shells,
+    // its display thread, store cards: no codegen pass in Futari). Its late input acts only with futari_late_input off.
+    // CPU: the render thread.
+    {"banjo_deko3d_push_constants", kCpu, "Renut: float and shared constants pushed into fixed uniform buffers (render-thread proposals 2, 5)", "true", "false"},
+    {"banjo_deko3d_ring_cleaner", kCpu, "Renut: the upload ring's cache clean on the background core (render-thread proposal 23)", "true", "false"},
+    {"banjo_renut_capture_pool", kCpu, "Renut: queued draws' captures from a pool", "true", "false"},
+    {"banjo_renut_snapshot_deltas", kCpu, "Renut (sa2-nx): a draw keeps only the device chunks and constant groups changed since the previous one (whole device before)", "true", "false"},
+    {"futari_renut_deferred_chain", kCpu, "Renut: Begin*Vertices draws (88 % of Futari's) deltas of the snapshot chain too, not whole copies", "true", "false"},
+    {"banjo_renut_snapshot_deltas_constants", kCpu, "Renut (sa2-nx): the chain's draws push only the constant groups that changed", "true", "false"},
+    {"banjo_renut_snapshot_deltas_narrow", kCpu, "Renut (sa2-nx): only the device chunks the render thread reads compared", "true", "false"},
+    {"banjo_renut_neon_compare", kCpu, "Renut (sa2-nx): 64-byte lines compared with NEON (4 loads, XOR, OR, one max)", "true", "false"},
+    {"banjo_renut_capture_batches", kCpu, "Renut (sa2-nx): the capture pool taken and given back 32 at a time (no lock per draw)", "true", "false"},
+    {"banjo_renut_callbacks_fast", kCpu, "Renut (sa2-nx): the hooks' callback and pending-vertex checks return at once when there is nothing", "true", "false"},
+    {"banjo_renut_prefetch_next", kCpu, "Renut (sa2-nx): the next queued draw's capture prefetched", "true", "false"},
+    {"banjo_renut_done_notify_waiters", kCpu, "Renut (sa2-nx): the render thread's done signal only with a waiter", "true", "false"},
+    {"banjo_renut_batch_clock", kCpu, "Renut (sa2-nx): one clock read per batch of render work", "true", "false"},
+    {"banjo_renut_chain_reuse", kCpu, "Renut (sa2-nx): a draw reuses the previous draw's key, targets, viewport, textures and pipeline when nothing they come from changed", "true", "false"},
+    {"banjo_renut_chain_reuse_replays", kCpu, "Renut: the chain's reuse for recorded command-buffer replays too", "true", "false"},
+    {"banjo_renut_inline_line_compare", kCpu, "Renut (sa2-nx): shared constant lines compared inline (no memcmp calls)", "true", "false"},
+    {"banjo_renut_fetch_slots_skip", kCpu, "Renut (sa2-nx): texture and fetch-slot lines known equal not compared", "true", "false"},
+    {"banjo_renut_shared_partial_clear", kCpu, "Renut (sa2-nx): only the part of the shared constants after the texture words cleared", "true", "false"},
+    {"banjo_renut_fetch_data_unread", kCpu, "Renut (sa2-nx): no fetch-data upload for draws that read none (the line stops changing)", "true", "false"},
+    {"banjo_renut_stream_mask", kCpu, "Renut (sa2-nx): vertex streams walked by a mask", "true", "false"},
+    {"banjo_renut_texture_defaults_copy", kCpu, "Renut (sa2-nx): default texture words as one block copy", "true", "false"},
+    {"banjo_renut_lean_diagnostics", kCpu, "Renut (sa2-nx): per-draw diagnostic counts only while their lines are logged", "true", "false"},
+    {"banjo_renut_core_layout", kCpu, "Renut (Switch, sa2-nx): the drawing thread alone on core 0, the other guest threads on cores 1-2", "true", "false"},
+    {"banjo_renut_wake_batch", kCpu, "Renut (sa2-nx): the sleeping render thread woken every 16 queued draws, not every draw", "16", "1"},
+    {"banjo_renut_cpu_memos", kCpu, "Renut: the render thread's per-draw lookups memoised (targets, textures, streams, memexport)", "true", "false"},
+    {"banjo_renut_pipeline_memo", kCpu, "Renut: a memo of the pipeline each key gave", "true", "false"},
+    {"banjo_renut_shared_dedupe", kCpu, "Renut: SharedConstants equal to the previous draw's not uploaded again", "true", "false"},
+    {"banjo_renut_queue_notify_idle", kCpu, "Renut: queued work wakes the render thread only while it waits", "true", "false"},
+    {"banjo_renut_record_worker", kCpu, "Renut: command recording split across two threads", "true", "false"},
+    {"banjo_renut_pmull_hash", kCpu, "Renut (ARM): content hashes with PMULL folding", "true", "false"},
+    {"banjo_renut_neon_swap", kCpu, "Renut (ARM): vertex byte swaps 16 bytes per NEON reverse", "true", "false"},
+    {"banjo_renut_upload_cached", kCpu, "Renut (Switch): the upload ring in CPU-cached memory", "true", "false"},
+    {"banjo_ring_core", kCpu, "Renut (Switch): the render thread pinned to core 1", "1", "-1"},
+    {"banjo_background_compile_core", kCpu, "Renut (Switch): pipeline prewarm and specialisation threads pinned to core 2", "2", "-1"},
+    {"banjo_renut_record_worker_core", kCpu, "Renut (Switch): the recording worker pinned to core 0", "0", "-1"},
+    {"masseffect_native_nvk_emission", kCpu, "Renut on NVK: each draw command written in one go", "true", "false"},
+    {"masseffect_native_nvk_cbufs", kCpu, "Renut on NVK: only the cbuf slots that can get dirty looked at", "true", "false"},
+    {"masseffect_native_nvk_dynamic", kCpu, "Renut on NVK: only the dirty dynamic state groups emitted", "true", "false"},
+    {"masseffect_native_nvk_preload", kCpu, "Renut on NVK: PRFM hints for the pipeline and shaders", "true", "false"},
+    {"masseffect_native_set4_differences", kCpu, "Renut on NVK: descriptor set 4 by differences", "true", "false"},
+    // Non-CPU: GPU work, memory, input latency.
+    {"banjo_deko3d_alpha_spec", kGpu, "Renut deko3d: the alpha test's function in the pipeline (constant 903)", "true", "false"},
+    {"banjo_deko3d_tess_spec", kGpu, "Renut deko3d: no tessellation code in pipelines without it (constant 904)", "true", "false"},
+    {"banjo_deko3d_early_hoist", kGpu, "Renut deko3d: the early alpha test's texture fetch hoisted", "true", "false"},
+    {"banjo_deko3d_early_z", kGpu, "Renut deko3d: depth tested before a discarding shader that writes no depth (constant 909)", "true", "false"},
+    {"banjo_deko3d_txq_constants", kGpu, "Renut deko3d: texture sizes from a buffer, not a query", "true", "false"},
+    {"banjo_deko3d_vs_outputs", kGpu, "Renut deko3d: vertex shaders write only what the pixel shader reads", "true", "false"},
+    {"banjo_deko3d_uam_prmt", kGpu, "Renut deko3d: uam's byte swaps as PRMT", "true", "false"},
+    {"banjo_deko3d_uam_gvn", kGpu, "Renut deko3d: uam's global value numbering", "true", "false"},
+    {"banjo_deko3d_uam_uniform_branches", kGpu, "Renut deko3d: uam's uniform branches without reconvergence", "true", "false"},
+    {"banjo_deko3d_zcull", kGpu, "Renut deko3d: hierarchical depth culling", "true", "false"},
+    {"banjo_deko3d_depth_compression", kGpu, "Renut deko3d: compressed depth targets", "true", "false"},
+    {"banjo_deko3d_depth24", kGpu, "Renut deko3d: D24S8 targets as 24-bit depth", "true", "false"},
+    {"banjo_deko3d_depth_handover", kGpu, "Renut deko3d: a whole depth resolve handed over, not drawn", "true", "false"},
+    {"banjo_deko3d_draw_resolves", kGpu, "Renut deko3d: colour resolves drawn on the 3D engine", "true", "false"},
+    {"banjo_deko3d_barrier_lean", kGpu, "Renut deko3d: write-only transitions keep the texture cache", "true", "false"},
+    {"banjo_deko3d_barrier_merge", kGpu, "Renut deko3d: back-to-back barriers merged", "true", "false"},
+    {"banjo_gpu_depth_only", kGpu, "Renut: depth-only pipelines for colourless draws", "true", "false"},
+    {"banjo_gpu_depth_words_view", kGpu, "Renut: a depth resolve's words read through its own texture (fewer copies)", "true", "false"},
+    {"banjo_gpu_output_trim", kGpu, "Renut: colour outputs a pipeline never writes trimmed", "true", "false"},
+    {"banjo_gpu_bool_spec", kGpu, "Renut: bool constants as specialisation constants", "true", "false"},
+    {"banjo_gpu_tess_grid", kGpu, "Renut: tessellated patches as a precomputed grid", "true", "false"},
+    {"banjo_gpu_robustness_off", kGpu, "Renut (Vulkan): pipelines without buffer and image robustness", "true", "false"},
+    {"banjo_gpu_nvk_draw_contract", kGpu, "Renut on NVK: NVK's per-draw contract", "true", "false"},
+    {"banjo_gpu_blend_skip", kGpu, "Renut: pixels whose blend changes nothing discarded", "true", "false"},
+    {"banjo_renut_precise_barriers", kGpu, "Renut (Vulkan): barriers' access masks from the layouts", "true", "false"},
+    {"banjo_renut_push_point_only", kGpu, "Renut (Vulkan): the push constant read only by point sprites", "true", "false"},
+    {"banjo_renut_resolve_skip", kGpu, "Renut: a resolve of an unchanged source into the same texture not done again", "true", "false"},
+    {"banjo_renut_depth_words_lazy", kGpu, "Renut: a depth resolve's words written only when read", "true", "false"},
+#if REX_PLATFORM_SWITCH  // (off by default on the PC)
+    {"banjo_renut_memory_policy", kGpu, "Renut: memory limits sized for the console", "true", "false"},
+#endif
+    {"banjo_renut_pipeline_cache", kGpu, "Renut (Vulkan): the driver's pipelines kept on disk", "true", "false"},
+    {"banjo_renut_cache_save_quiet", kGpu, "Renut: the pipeline cache saved once no pipeline was built for a while", "true", "false"},
+    {"banjo_renut_linked_stages", kGpu, "Renut on NVK (Switch): each pipeline's stages compiled together", "true", "false"},
+    {"banjo_deko3d_kick_submit", kGpu, "Renut deko3d, input lag: command lists handed to the GPU at the game's kicks", "true", "false"},
+    {"banjo_deko3d_eager_kicks", kGpu, "Renut deko3d, input lag: lists of 100 draws (6 a frame), each submitted at its own kick", "true", "false"},
+    {"banjo_late_input", kGpu, "Renut, input lag: the controllers read as late as the render thread's slack allows (only with futari_late_input off)", "true", "false"},
+    {"futari_renut_double_buffer", kGpu, "Renut, input lag: a 2-image swapchain (one image less queued before the display)", "true", "false"},
+    // banjo_deko3d_latency_trim is not a row: off by default as banjo-nx's until a console measures it (a row would put
+    // it on in the built-in defaults); its own check honours the non-CPU master (banjo_renut_tuning.cpp).
 };
 // clang-format on
 
@@ -254,6 +373,12 @@ void Apply() {
     list += e.key;
     active_count += on;
   }
+  futari::native::CodegenChecksInit();  // the diagnostic keys of the generated code's self-checks (PC only)
+  futari::native::FormsSelfCheck();     // the helpers' instruction forms on this processor (every start)
+#if defined(__aarch64__)
+  // futari_cpu_guest_cas_no_barrier: off (or the CPU master off) puts the legacy `dmb ish` back.
+  g_rex_atomic_legacy_barrier = REXCVAR_GET(futari_cpu_guest_cas_no_barrier) ? 0 : 1;
+#endif
   if (REXCVAR_GET(futari_cpu_verify)) {
     rex::cvar::SetFlagByName("futari_native_verify_n", "2147483647");
     rex::cvar::SetFlagByName("futari_native_fast_copy_verify", "2147483647");

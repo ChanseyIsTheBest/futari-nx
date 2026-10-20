@@ -19,6 +19,7 @@
 #include <thread>
 
 #include <rex/cvar.h>
+#include <rex/frame_latency.h>
 #include <rex/graphics/pipeline/texture/info.h>
 #include <rex/graphics/register_file.h>
 #include <rex/graphics/video_mode_util.h>
@@ -439,7 +440,6 @@ u32 VdRetrainEDRAM_entry(u32 unk0, u32 unk1, u32 unk2, u32 unk3, u32 unk4, u32 u
   return 0;
 }
 
-std::atomic<uint64_t> g_guest_swap_count{0};
 
 }  // namespace rex::kernel::xboxkrnl
 
@@ -457,8 +457,11 @@ REXCVAR_DEFINE_INT32(vblank_per_swap_min_us, 16667, "GPU",
 
 namespace rex::kernel::xboxkrnl {
 
+// futari-nx (2026-10-19): the latency probe's count (rex/frame_latency.h), which VdSwap feeds and so does a renderer
+// that replaces Direct3D's Swap and calls no VdSwap (Renut's): lockstep runs, recordings and the late input follow
+// either.
 uint64_t GuestSwapCount() {
-  return g_guest_swap_count.load(std::memory_order_relaxed);
+  return rex::latency::SwapCount();
 }
 
 bool VblankPerSwap() {
@@ -473,7 +476,7 @@ bool WaitSwapForVblank(uint64_t& last_swap, const std::atomic<bool>& running) {
                         std::chrono::milliseconds(REXCVAR_GET(vblank_per_swap_timeout_ms));
   while (running.load(std::memory_order_acquire)) {
     const auto now = std::chrono::steady_clock::now();
-    const uint64_t swaps = g_guest_swap_count.load(std::memory_order_acquire);
+    const uint64_t swaps = rex::latency::SwapCount();
     if ((swaps != last_swap && now >= earliest) || now >= deadline) {
       last_swap = swaps;
       last_vblank = now;
@@ -568,7 +571,7 @@ void VdSwap_entry(mapped_void buffer_ptr,      // ptr into primary ringbuffer
   for (uint32_t i = offset; i < 64; i++) {
     dwords[i] = xenos::MakePacketType2();
   }
-  g_guest_swap_count.fetch_add(1, std::memory_order_release);
+  rex::latency::NoteGuestSwap();  // rex/frame_latency.h (GuestSwapCount)
 }
 
 void RegisterVideoExports(rex::runtime::ExportResolver* export_resolver,

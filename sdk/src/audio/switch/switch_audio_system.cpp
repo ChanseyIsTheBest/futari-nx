@@ -63,11 +63,22 @@ REXCVAR_DEFINE_INT32(audio_switch_frames_in_queue, 10, "Audio",
                      "output, at the cost of latency: futari_audio_wait_server_ms waits up to 30 ms; read "
                      "when the audio is opened");
 
+// Input lag (futari-nx, 2026-10-16): a sound the game makes reaches the speaker after the frames queued above
+// (audio_switch_frames_in_queue: 10 = 53 ms) and the audout buffers in the device (3 of this many frames: 4 = 64 ms),
+// some 80 to 115 ms in all, which a shot's sound trails the shot by. Fewer frames per buffer and a shorter queue
+// shorten it (2 and 4: about 32 + 21 ms); too short and the output runs dry when the game is late (gaps, crackles).
+REXCVAR_DEFINE_INT32(audio_switch_frames_per_buffer, 4, "Audio",
+                     "Game audio frames (256 samples, 5.3 ms) per audout buffer; three buffers are queued in the "
+                     "device. 4 = 21.3 ms each (MarathonRecomp-NX's block); fewer = less audio latency, more risk of "
+                     "gaps. Read when the audio is opened")
+    .range(1, 4)
+    .lifecycle(rex::cvar::Lifecycle::kInitOnly);
+
 namespace rex::audio::nx {
 
 namespace {
 
-// Guest frames per audout buffer, and buffers kept queued in the device.
+// Guest frames per audout buffer (at most: audio_switch_frames_per_buffer), and buffers kept queued in the device.
 // 4 frames are 1024 samples (21.3 ms), the block size MarathonRecomp-NX found
 // to be safe on the shared cores; three buffers cap the latency at ~64 ms.
 constexpr uint32_t kFramesPerBuffer = 4;
@@ -176,6 +187,7 @@ struct SwitchAudioSystem::Output {
   std::atomic<bool> running{false};
   bool pump = false;  // audio_switch_pump, read when audio is opened
   size_t frames_in_queue = kTargetQueuedFrames;  // audio_switch_frames_in_queue, read when audio is opened
+  uint32_t frames_per_buffer = kFramesPerBuffer;  // audio_switch_frames_per_buffer, read when audio is opened
   bool audout_initialized = false;
   bool audout_started = false;
   std::array<AudioOutBuffer, kBufferCount> buffers{};
@@ -234,6 +246,10 @@ bool SwitchAudioSystem::StartOutput() {
   output->declick_options.smooth = REXCVAR_GET(audio_switch_declick_smooth);
   output->declick_options.predict = REXCVAR_GET(audio_switch_declick_predict);
   output->frames_in_queue = static_cast<size_t>(std::clamp(REXCVAR_GET(audio_switch_frames_in_queue), 2, 32));
+  output->frames_per_buffer =
+      static_cast<uint32_t>(std::clamp(REXCVAR_GET(audio_switch_frames_per_buffer), 1, int32_t(kFramesPerBuffer)));
+  REXLOG_INFO("SwitchAudioSystem: {} game frames per audout buffer ({:.1f} ms), 3 buffers",
+              output->frames_per_buffer, output->frames_per_buffer * 256.0 / 48.0);
   REXLOG_INFO("SwitchAudioSystem: 187.5 Hz pump {}, {} frames queued", output->pump ? "active" : "off",
               output->frames_in_queue);
 
@@ -265,7 +281,7 @@ bool SwitchAudioSystem::StartOutput() {
     buffer.next = nullptr;
     buffer.buffer = output->samples[i];
     buffer.buffer_size = kBufferAllocBytes;
-    buffer.data_size = kBufferBytes;
+    buffer.data_size = output->frames_per_buffer * SwitchAudioDriver::kChannelSamples * 2 * sizeof(s16);
     buffer.data_offset = 0;
   }
 
@@ -332,7 +348,7 @@ void SwitchAudioSystem::FillAndAppend(size_t buffer_index) {
   uint32_t frames_missing = 0;
   {
     std::lock_guard<std::mutex> guard(drivers_mutex_);
-    for (uint32_t frame = 0; frame < kFramesPerBuffer; ++frame) {
+    for (uint32_t frame = 0; frame < output.frames_per_buffer; ++frame) {
       float* out = output.mix.data() + frame * SwitchAudioDriver::kChannelSamples * 2;
       for (SwitchAudioDriver* driver : drivers_) {
         // A client with nothing queued contributes silence and gets no
@@ -349,7 +365,7 @@ void SwitchAudioSystem::FillAndAppend(size_t buffer_index) {
     // audio_switch_declick: per guest frame of the buffer (interleaved stereo, 256 samples each).
     constexpr uint32_t kFrame = SwitchAudioDriver::kChannelSamples;
     uint64_t smoothed = 0;
-    for (uint32_t frame = 0; frame < kFramesPerBuffer; ++frame) {
+    for (uint32_t frame = 0; frame < output.frames_per_buffer; ++frame) {
       smoothed += DeclickFrame(output.mix.data() + frame * kFrame * 2, kFrame, output.declick_state,
                                output.declick_options) ? 1 : 0;
     }
@@ -360,10 +376,11 @@ void SwitchAudioSystem::FillAndAppend(size_t buffer_index) {
   // How much the mix saturates before it is clipped (the crackling in handheld mode). Counting only.
   float pico = 0.0f;
   uint32_t saturated = 0;
+  const size_t used = size_t(output.frames_per_buffer) * SwitchAudioDriver::kChannelSamples * 2;
   if (REXCVAR_GET(audio_mute)) {
-    std::memset(samples, 0, kBufferBytes);
+    std::memset(samples, 0, used * sizeof(s16));
   } else {
-    for (size_t i = 0; i < output.mix.size(); ++i) {
+    for (size_t i = 0; i < used; ++i) {
       const float value = std::isfinite(output.mix[i]) ? output.mix[i] : 0.0f;
       const float magnitude = std::fabs(value);
       pico = std::max(pico, magnitude);
@@ -375,7 +392,7 @@ void SwitchAudioSystem::FillAndAppend(size_t buffer_index) {
   RexSwitchPerfAdd(21, saturated);
   RexSwitchPerfAdd(22, pico >= 0.98f ? 1 : 0);
   RexSwitchPerfMax(23, static_cast<u64>(std::min(pico, 100.0f) * 10000.0f));
-  output.buffers[buffer_index].data_size = kBufferBytes;
+  output.buffers[buffer_index].data_size = used * sizeof(s16);
   output.buffers[buffer_index].data_offset = 0;
   Result rc = audoutAppendAudioOutBuffer(&output.buffers[buffer_index]);
   RexSwitchPerfAdd(24, frames_mixed);

@@ -1,0 +1,12 @@
+# kiniro_normal: guest functions whose A57 code is cheaper WITHOUT the loop / leaf locals (tools/codegen_choice.py,
+# 2026-10-19; the Switch build's compile line without LTO, loop-weighted cost, off cheaper by more than
+# 2.0 %). "<tool> <name>": tool = loop (tools/loop_locals.py) or leaf (tools/leaf_locals.py).
+leaf sub_880EA088
+leaf sub_8813CD28
+loop sub_88079F30
+loop sub_88083E30
+loop sub_8813F9F0
+loop sub_88140830
+loop sub_881423E0
+loop sub_88145E20
+loop sub_88147138

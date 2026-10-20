@@ -1,0 +1,26 @@
+# Indirect call sites that go to one target: tools/indirect_calls.py --promote turns each into a guarded
+# direct call. Written by tools/indirect_promotions.py from a PC census (futari_diag_indirect_census); the
+# guard compares the target, so the list only has to be good, not complete.
+# Census: 68 sites, 2246420 calls. Promoted: 18 sites whose guards catch 87.3 % of the calls (7 of them with
+# two or three targets, 3 with one dominant target of at least 70 %). Not promoted: 10.9 % of the
+# calls in sites with many targets, 0.6 % to targets outside the generated tree, 0.0 % in sites below
+# 0.02 % of all calls.
+# <function> <site> <target> [<target2> [<target3>]]   # calls in the census, share the guards catch
+8808FB90 0 88168F98   # 5428, 100.00 %
+8808FB90 2 88168C80   # 5427, 100.00 %
+88090480 0 880E4CD0   # 74112, 99.98 %
+88092C28 0 8813A6A0   # 518, 100.00 %
+88093950 0 88091D68   # 1733748, 99.20 %
+88095950 2 881A6C30   # 10509, 73.39 %
+880F3568 0 880F2DA8 880F2948   # 491, 100.00 %
+880F3568 1 880F3180 880F2F00   # 41180, 100.00 %
+880F55D0 2 880F5CF8 880F60C0 880F5F10   # 22439, 100.00 %
+880F84D0 0 880F6E70 880F7208 880F6260   # 1339, 100.00 %
+880F84D0 1 880F8078 880F73C0 880F8240   # 32540, 100.00 %
+88135B48 0 88103048   # 3846, 99.95 %
+88136368 0 88135D10   # 2034, 99.95 %
+881363E0 0 88094C48   # 31926, 71.53 %
+8813B0B0 0 8813B610 8813B270   # 13101, 100.00 %
+88154298 0 881E35E0   # 1441, 100.00 %
+8815DB70 1 8815C3D8 8815AB88   # 5713, 100.00 %
+881E2F38 1 881E3798   # 1826, 99.89 %

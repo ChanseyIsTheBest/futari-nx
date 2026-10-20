@@ -21,6 +21,29 @@ set(REXSDK_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../sdk" CACHE PATH "Path to the ReXG
 if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/generated/rexglue.cmake")
     message(FATAL_ERROR "app/generated/rexglue.cmake is missing: run tools/codegen.ps1 first")
 endif()
+
+# From peggle2-nx (2026-10-13; banjo-nx ships the same): -mearly-ra=none for everything compiled for the console.
+# devkitA64 GCC 16.1 runs an AArch64 "early register allocation" pass at -O2 and above (-mearly-ra=all). In Peggle 2's
+# console build it dropped 38 table lookups of the XDK's streaming copy (the two-register lookup of the NEON vperm
+# helper, rex/ppc/intrinsics.h: pseudos that need consecutive registers) and overwrote the register holding a
+# constant: garbage in large textures on the console only. Clang builds the PC code, so no PC check can see it.
+# Futari 1.0.0 shows no sign of it (the only game function with two-register lookups, sub_82153CB8, is complete with
+# the pass on and off), but the NEON vperm helper of the CPU round below is the trigger. Here, before the SDK is
+# added, so its libraries and the LTO link get it too. tools/check_switch_build.py looks for the symptom (a table
+# lookup whose table and index are one register). FUTARI_SWITCH_EARLY_RA=ON puts the compiler's default back.
+option(FUTARI_SWITCH_EARLY_RA "Leave GCC's AArch64 early register allocation pass on (Switch; can miscompile)" OFF)
+if(REXGLUE_PLATFORM_SWITCH AND NOT FUTARI_SWITCH_EARLY_RA)
+    add_compile_options(-mearly-ra=none)
+    add_link_options(-mearly-ra=none)
+endif()
+
+# Mesa's static NVK (the Vulkan driver, ~22 MB of the NRO) in the Switch link (the user, 2026-10-20: deko3d only). The
+# native renderer, the emulated GPU and Renut's Vulkan back end need it; with it OFF the SDK's switch_vulkan_stub.c
+# answers the Vulkan entry points they reference (no driver: instance creation fails), so only Renut on deko3d draws.
+# Here, before the SDK is added, which reads REXGLUE_SWITCH_LINK_NVK. ON puts the driver back (the A/B pair).
+option(FUTARI_SWITCH_NVK "Switch: link Mesa's NVK Vulkan driver (OFF: deko3d only, Vulkan answered by a stub)" OFF)
+set(REXGLUE_SWITCH_LINK_NVK ${FUTARI_SWITCH_NVK} CACHE BOOL "" FORCE)
+
 include(generated/rexglue.cmake)
 
 # The build re-runs codegen whenever one of its inputs changes (the manifest, an overrides toml, the xex). The
@@ -40,7 +63,7 @@ endif()
 if(TARGET futari_codegen AND FUTARI_PERF_CODEGEN_POST)
     find_package(Python3 COMPONENTS Interpreter REQUIRED)
     add_custom_command(OUTPUT "${CMAKE_CURRENT_SOURCE_DIR}/generated/default/codegen.build.stamp" APPEND
-        COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/../tools/perf_codegen_post.py" ${_futari_post_args})
+        COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/../tools/post_codegen.py" ${_futari_post_args})
 endif()
 
 set(FUTARI_SOURCES
@@ -66,6 +89,8 @@ set(FUTARI_SOURCES
     # Native replacements of hot guest functions (src/native/futari_native.h): framework + default.xex's natives. The
     # game cores' natives are compiled into each core target (below).
     src/native/futari_native.cpp
+    src/native/futari_codegen_checks.cpp
+    src/native/futari_forms_selfcheck.cpp
     src/native/futari_native_crt.cpp
     src/native/futari_native_frame.cpp
     # Localized copies of the hottest guest functions (tools/localize_native.py -> app/generated/hot).
@@ -104,6 +129,12 @@ endif()
 
 # Link the SDK. Stage 1 draws with ReXGlue's Xenos GPU emulation; the native renderer replaces it later.
 rexglue_setup_target(futari GPU_PLUGINS xenos)
+
+# banjo-nx's fix (2026-10-17), futari-nx 2026-10-20: Ryujinx starts NROs without argv[0]; the SDK then takes the NRO's
+# usual place on the SD (sdk/src/core/filesystem_posix.cpp). A console's hbloader always passes the path.
+if(REXGLUE_PLATFORM_SWITCH AND TARGET rexcore)
+    target_compile_definitions(rexcore PRIVATE REX_SWITCH_FALLBACK_EXE="/switch/futari-nx/futari.nro")
+endif()
 
 # SPIR-V initializers of the native renderer's EDRAM transfer / utility shaders (src/me/futari/shaders), compiled
 # on the host with glslangValidator (tools/win/build_glslang.ps1 builds it from the SDK's glslang). The Switch build
@@ -186,19 +217,159 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
 endif()
 
 # 2026-10-07 (masseffect-nx ships it; sasrt-nx's reminder): no errno after sqrt & co. (one fsqrt instead of a check and
-# a possible libm call) and no assumption that a floating-point operation can trap. IEEE results are unchanged (no
-# -ffinite-math-only: NaN and infinity checks stay); only errno and trap semantics, which the recompiled code never
-# observes. Build-time switch: -DFUTARI_GENERATED_MATH_FLAGS=OFF builds without them (the A/B is a pair of builds).
-option(FUTARI_GENERATED_MATH_FLAGS "-fno-math-errno -fno-trapping-math on the generated game code" ON)
-if(FUTARI_GENERATED_MATH_FLAGS AND CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+# a possible libm call). Values are unchanged: nothing reads errno. The app has the same rule as the game code: GCC
+# does not inline between two functions that both compute with floats and differ in -fmath-errno, which would keep the
+# native replacements and the game functions that call them apart at the LTO link.
+option(FUTARI_GAME_NO_MATH_ERRNO "-fno-math-errno on the recompiled game code and the app" ON)
+# -fno-trapping-math was on with it until 1.0.0 and is a separate switch and OFF since (sa2-nx's audit of 2026-10-12):
+# it lets the compiler run a float operation earlier than the code does (out of a branch, out of a loop). The
+# recompiled code changes the host's flush mode in between (msr fpcr), which the compiler does not know a float
+# operation depends on, so an operation moved in front of a mode check would compute a denormal operand in the wrong
+# mode. The flag buys at most 0.5 % of one file.
+option(FUTARI_GAME_NO_TRAPPING_MATH "-fno-trapping-math on the recompiled game code (not exact, see the comment)" OFF)
+if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
     foreach(target futari futari_recomp
             futari_palm_normal futari_palm_abnormal futari_reco_normal futari_reco_abnormal
             futari_hirow_normal futari_hirow_abnormal futari_kiniro_normal futari_kiniro_abnormal)
         if(TARGET ${target})
-            target_compile_options(${target} PRIVATE -fno-math-errno -fno-trapping-math)
+            if(FUTARI_GAME_NO_MATH_ERRNO)
+                target_compile_options(${target} PRIVATE -fno-math-errno)
+            endif()
+            if(FUTARI_GAME_NO_TRAPPING_MATH)
+                target_compile_options(${target} PRIVATE -fno-trapping-math)
+            endif()
         endif()
     endforeach()
 endif()
+
+# The second and third CPU rounds of sa2-nx (2026-10-12; docs/futari-notes.md, "The CPU rounds of 1.0.1"): one switch
+# back per post-codegen step (tools/post_codegen.py). OFF compiles the statements as they were before the step, on
+# every platform, so a PC build can take one step out to find which of them a difference comes from. (sa2-nx's three
+# stack-frame elisions are not here at all: they change what stale data the guest's stack frames hold.)
+option(FUTARI_GEN_RO_CONSTANTS "Loads from the image's read-only data as constants" ON)
+option(FUTARI_GEN_FLOAT_LOADS "Single-precision loads straight into a float register" ON)
+option(FUTARI_GEN_LEAF_LOCALS "ctx registers of leaf functions with loops as locals" ON)
+option(FUTARI_GEN_LOOP_LOCALS "ctx registers of call-free loops as locals for the length of the loop" ON)
+option(FUTARI_GEN_COLD_TRAPS "The trap helper out of line and cold" ON)
+option(FUTARI_GEN_PROMOTED_CALLS "Guarded direct calls at the promoted indirect call sites" ON)
+set(_futari_gen_definitions "")
+if(NOT FUTARI_GEN_RO_CONSTANTS)
+    list(APPEND _futari_gen_definitions REX_RO_CONSTANTS_OFF)
+endif()
+if(NOT FUTARI_GEN_FLOAT_LOADS)
+    list(APPEND _futari_gen_definitions REX_FLOAT_LOADS_INTEGER)
+endif()
+if(NOT FUTARI_GEN_LEAF_LOCALS)
+    list(APPEND _futari_gen_definitions REX_LEAF_LOCALS_OFF)
+endif()
+if(NOT FUTARI_GEN_LOOP_LOCALS)
+    list(APPEND _futari_gen_definitions REX_LOOP_LOCALS_OFF)
+endif()
+if(NOT FUTARI_GEN_COLD_TRAPS)
+    list(APPEND _futari_gen_definitions "REX_TRAP_ATTR=")
+endif()
+if(NOT FUTARI_GEN_PROMOTED_CALLS)
+    list(APPEND _futari_gen_definitions REX_PROMOTED_CALLS_OFF)
+endif()
+# banjo-nx's codegen round (2026-10-19; docs/futari-notes.md, "Banjo's codegen round"): the same rule, one switch back
+# per step. The two _POISON options are PC tests, never for a build that ships: every write the step left out writes
+# 0xDEADBEEF... (a signalling NaN for a float register) instead, so a reader the analysis missed breaks visibly.
+option(FUTARI_GEN_NARROW_LOOP_BARRIER "Loop barriers clobber the guest window only (OFF: all memory)" ON)
+option(FUTARI_GEN_DCBT_PREFETCH "The guest's dcbt / dcbtst hints as host prefetches" ON)
+option(FUTARI_GEN_VECTOR_LOCALS_BY_VALUE "Vector registers of the loop and leaf locals as values, not references" ON)
+option(FUTARI_GEN_VPERM1 "A vperm of one vector as a one-register lookup" ON)
+option(FUTARI_GEN_FP_SIGN_OPS "fneg / fabs / fnabs as float operations" ON)
+option(FUTARI_GEN_LEAF_DEAD "Leaf write-backs no caller can read left out" ON)
+option(FUTARI_GEN_LEAF_DEAD_POISON "PC test: the left-out leaf write-backs write poison" OFF)
+option(FUTARI_GEN_SINGLE_FLOATS "Single-precision arithmetic in float where the inputs are proven singles" ON)
+option(FUTARI_GEN_INLINE_MEMCALLS "memcpy / memset of a constant size up to 64 bytes inline" ON)
+option(FUTARI_GEN_VEC_UNALIGNED "stvlx / stvrx as a few stores instead of byte loops" ON)
+option(FUTARI_GEN_RO_CFG "Read-only constants found over the control-flow graph" ON)
+option(FUTARI_GEN_DEAD_DEFS "Guest register writes nothing reads left out" ON)
+option(FUTARI_GEN_DEAD_DEFS_POISON "PC test: the left-out register writes write poison" OFF)
+option(FUTARI_GEN_FLUSH_HOIST "Loop-header flush-mode checks in front of the loop" ON)
+option(FUTARI_GEN_LR_WRITE_SAME "Proven link-register write-backs compile to nothing (the PC build checks each)" ON)
+option(FUTARI_GEN_R1_LOCAL "Guest r1 as a local mirror (the PC build checks the assumed calls)" ON)
+option(FUTARI_GEN_VSEL_NEON "VMX vsel as one NEON bit select" ON)
+option(FUTARI_GEN_INLINE_LEAVES "Inline copies of tiny leaf functions in the files that call them" ON)
+if(NOT FUTARI_GEN_NARROW_LOOP_BARRIER)
+    list(APPEND _futari_gen_definitions REX_LOOP_BARRIER_FULL)
+endif()
+if(NOT FUTARI_GEN_DCBT_PREFETCH)
+    list(APPEND _futari_gen_definitions "REX_PREFETCH(x,write)=")
+endif()
+if(FUTARI_GEN_VECTOR_LOCALS_BY_VALUE)
+    list(APPEND _futari_gen_definitions REX_VECTOR_LOCALS_BY_VALUE)
+endif()
+if(NOT FUTARI_GEN_VPERM1)
+    list(APPEND _futari_gen_definitions REX_VPERM1_OFF)
+endif()
+if(NOT FUTARI_GEN_FP_SIGN_OPS)
+    list(APPEND _futari_gen_definitions REX_FP_SIGN_INTEGER)
+endif()
+if(NOT FUTARI_GEN_LEAF_DEAD)
+    list(APPEND _futari_gen_definitions REX_LEAF_DEAD_KEEP)
+elseif(FUTARI_GEN_LEAF_DEAD_POISON)
+    list(APPEND _futari_gen_definitions REX_LEAF_DEAD_POISON)
+endif()
+if(NOT FUTARI_GEN_SINGLE_FLOATS)
+    list(APPEND _futari_gen_definitions REX_SINGLE_FLOATS_OFF)
+endif()
+if(NOT FUTARI_GEN_INLINE_MEMCALLS)
+    list(APPEND _futari_gen_definitions REX_INLINE_MEMCALLS_OFF)
+endif()
+if(NOT FUTARI_GEN_VEC_UNALIGNED)
+    list(APPEND _futari_gen_definitions REX_VEC_UNALIGNED_LOOPS)
+endif()
+if(NOT FUTARI_GEN_RO_CFG)
+    list(APPEND _futari_gen_definitions REX_RO_CFG_OFF)
+endif()
+if(NOT FUTARI_GEN_DEAD_DEFS)
+    list(APPEND _futari_gen_definitions REX_DEAD_DEFS_KEEP)
+elseif(FUTARI_GEN_DEAD_DEFS_POISON)
+    list(APPEND _futari_gen_definitions REX_DEAD_DEFS_POISON)
+endif()
+if(NOT FUTARI_GEN_FLUSH_HOIST)
+    list(APPEND _futari_gen_definitions REX_FLUSH_HOIST_OFF)
+endif()
+if(NOT FUTARI_GEN_LR_WRITE_SAME)
+    list(APPEND _futari_gen_definitions REX_LR_WRITE_SAME_OFF)
+elseif(NOT REXGLUE_PLATFORM_SWITCH)
+    # The PC build compares every proven write-back with the value ctx.lr holds ([verify] self-checks line).
+    list(APPEND _futari_gen_definitions REX_LR_WRITE_SAME_CHECK)
+endif()
+if(NOT FUTARI_GEN_R1_LOCAL)
+    list(APPEND _futari_gen_definitions REX_R1_LOCAL_OFF)
+elseif(NOT REXGLUE_PLATFORM_SWITCH)
+    # The PC build compares the mirror with ctx.r1 after every kept or assumed call ([verify] self-checks line).
+    list(APPEND _futari_gen_definitions REX_R1_CHECK)
+endif()
+if(NOT FUTARI_GEN_VSEL_NEON)
+    list(APPEND _futari_gen_definitions REX_VSEL_OFF)
+endif()
+if(NOT FUTARI_GEN_INLINE_LEAVES)
+    list(APPEND _futari_gen_definitions REX_INLINE_LEAVES_OFF)
+endif()
+# The game code, the eight game cores and the app (whose localized copies are the same generated statements).
+foreach(target futari futari_recomp
+        futari_palm_normal futari_palm_abnormal futari_reco_normal futari_reco_abnormal
+        futari_hirow_normal futari_hirow_abnormal futari_kiniro_normal futari_kiniro_abnormal)
+    if(TARGET ${target} AND _futari_gen_definitions)
+        target_compile_definitions(${target} PRIVATE ${_futari_gen_definitions})
+    endif()
+endforeach()
+message(STATUS "futari: CPU rounds 2 and 3: read-only constants ${FUTARI_GEN_RO_CONSTANTS}, float loads "
+               "${FUTARI_GEN_FLOAT_LOADS}, leaf locals ${FUTARI_GEN_LEAF_LOCALS}, loop locals "
+               "${FUTARI_GEN_LOOP_LOCALS}, cold traps ${FUTARI_GEN_COLD_TRAPS}, promoted calls "
+               "${FUTARI_GEN_PROMOTED_CALLS}")
+message(STATUS "futari: banjo-nx's codegen round: narrow loop barrier ${FUTARI_GEN_NARROW_LOOP_BARRIER}, dcbt "
+               "${FUTARI_GEN_DCBT_PREFETCH}, vector locals by value ${FUTARI_GEN_VECTOR_LOCALS_BY_VALUE}, vperm1 "
+               "${FUTARI_GEN_VPERM1}, fp sign ops ${FUTARI_GEN_FP_SIGN_OPS}, leaf dead ${FUTARI_GEN_LEAF_DEAD} (poison "
+               "${FUTARI_GEN_LEAF_DEAD_POISON}), single floats ${FUTARI_GEN_SINGLE_FLOATS}, memcalls "
+               "${FUTARI_GEN_INLINE_MEMCALLS}, unaligned stores ${FUTARI_GEN_VEC_UNALIGNED}, ro cfg ${FUTARI_GEN_RO_CFG}, "
+               "dead defs ${FUTARI_GEN_DEAD_DEFS} (poison ${FUTARI_GEN_DEAD_DEFS_POISON}), flush hoist "
+               "${FUTARI_GEN_FLUSH_HOIST}, lr write same ${FUTARI_GEN_LR_WRITE_SAME}, r1 local ${FUTARI_GEN_R1_LOCAL}, "
+               "vsel ${FUTARI_GEN_VSEL_NEON}, inline leaves ${FUTARI_GEN_INLINE_LEAVES}")
 
 # Native replacements inside the game cores (src/native/futari_native_core.cpp): a core's symbols are local to it, so
 # its natives are compiled into its own target, told which core it is by FUTARI_CORE_<name>. Not built with the
@@ -214,6 +385,14 @@ foreach(_core palm_normal palm_abnormal reco_normal reco_abnormal hirow_normal h
     endif()
 endforeach()
 set_source_files_properties(src/native/futari_native_core.cpp PROPERTIES SKIP_PRECOMPILE_HEADERS ON)
+
+# Renut's Direct3D-level renderer (futari_renderer = "renut"; cmake/futari_renut_gpu.cmake): Futari's Direct3D natively
+# through plume (Vulkan on the PC, deko3d on the Switch), no PM4 ring and no EDRAM model. Built in by default; off, the
+# build has Futari's own renderers only.
+option(FUTARI_RENUT_RENDERER "Renut's Direct3D-level renderer (futari_renderer = renut)" ON)
+if(FUTARI_RENUT_RENDERER)
+    include(cmake/futari_renut_gpu.cmake)
+endif()
 
 if(REXGLUE_PLATFORM_SWITCH)
     # Link map: which object (game core) each function of the profile comes from (tools/switch_hot_functions.py).
@@ -258,9 +437,104 @@ if(REXGLUE_PLATFORM_SWITCH)
                 target_compile_options(${target} PRIVATE ${_futari_lto_compile})
             endif()
         endforeach()
+        # The inliner's limits at the link, for the game code in a build that uses a profile (sa2-nx's measurements of
+        # 2026-10-12). GCC adds the profile's counters before its interprocedural inliner runs, so neither touches a
+        # recorded profile: they can change between the instrumented build and the one that uses its counts.
+        #   FUTARI_SWITCH_INLINE_AUTO         --param=max-inline-insns-auto. The compiler's 30 is its limit for
+        #                                     functions not declared inline, which says nothing about recompiled code
+        #                                     (in sa2-nx it refused call sites that ran 3.9 billion times). 64 inlines
+        #                                     the small ones among them; 200 also copies 2 KB functions into dozens
+        #                                     of hot places, which a 48 KB instruction cache pays for. Empty: the
+        #                                     compiler's.
+        #   FUTARI_SWITCH_INLINE_UNIT_GROWTH  --param=inline-unit-growth (the compiler's is 40 per cent). The inliner
+        #                                     takes the best call sites first and stops at this much growth of the
+        #                                     unit; without it the higher limit fills the 40 per cent with code the
+        #                                     session never ran. Empty: the compiler's.
+        set(FUTARI_SWITCH_INLINE_AUTO "64" CACHE STRING
+            "max-inline-insns-auto of the game code with a profile (empty: the compiler's)")
+        set(FUTARI_SWITCH_INLINE_UNIT_GROWTH "12" CACHE STRING
+            "inline-unit-growth of the game code with a profile (empty: the compiler's)")
+        set(_futari_inline_options "")
+        if(FUTARI_PGO STREQUAL "use")
+            if(FUTARI_SWITCH_INLINE_AUTO)
+                list(APPEND _futari_inline_options --param=max-inline-insns-auto=${FUTARI_SWITCH_INLINE_AUTO})
+            endif()
+            if(FUTARI_SWITCH_INLINE_UNIT_GROWTH)
+                list(APPEND _futari_inline_options --param=inline-unit-growth=${FUTARI_SWITCH_INLINE_UNIT_GROWTH})
+            endif()
+        endif()
+        if(_futari_inline_options)
+            if(TARGET futari_recomp)
+                target_compile_options(futari_recomp PRIVATE ${_futari_inline_options})
+            endif()
+            set_property(SOURCE src/native/futari_native_hot.cpp APPEND PROPERTY COMPILE_OPTIONS
+                         ${_futari_inline_options})
+        endif()
         target_link_options(futari PRIVATE ${_futari_lto_link})
-        message(STATUS "futari: Switch LTO on (${FUTARI_SWITCH_LTO_JOBS} LTRANS jobs, -fipa-pta ${FUTARI_SWITCH_IPA_PTA})")
+        message(STATUS "futari: Switch LTO on (${FUTARI_SWITCH_LTO_JOBS} LTRANS jobs, -fipa-pta "
+                       "${FUTARI_SWITCH_IPA_PTA}, game code inliner options '${_futari_inline_options}')")
     endif()
+    # sasrt-nx's CPU round of 2026-10-12, through sa2-nx (docs/futari-notes.md, "The CPU rounds of 1.0.1"). Each has
+    # its switch:
+    #   - No frame pointer in the game code: AArch64 GCC keeps the x29 frame chain in every non-leaf function by
+    #     default (stp x29, x30 / mov x29, sp), which costs the set-up instruction and one of the callee-saved
+    #     registers the recompiled code is short of. The SDK and the app keep theirs. The console profiler's pc
+    #     samples are unaffected; its caller chains (switch_perf.cpp walks x29, bounds-checked) end where they reach
+    #     a game function.
+    #   - The flush-mode checks the control flow fixes compile to nothing here (tools/flush_mode_flow.py); OFF defines
+    #     REX_FLUSH_FLOW_OFF, which puts the original checks back.
+    #   - Guest compare-and-swap without the legacy builtin's trailing `dmb ish` (tools/guest_cas.py); OFF defines
+    #     REX_GUEST_CAS_LEGACY (the run-time key futari_cpu_guest_cas_no_barrier puts the barrier back without a
+    #     build).
+    #   - Guest vector loads and stores reversed with REV64 + EXT instead of a table lookup (tools/vec_byteswap.py);
+    #     OFF defines REX_BSWAP128_TABLE.
+    #   - Constant word shuffles as one permutation (tools/pch_neon_shuffles.py); OFF defines REX_SIMDE_SHUFFLES.
+    #   - vperm and the float-to-integer conversions as their NEON instruction (rex/ppc/intrinsics.h); OFF defines
+    #     REX_VMX_HELPERS_X86_FORM. (The two-register table lookup of vperm is why -mearly-ra=none is set above.)
+    option(FUTARI_SWITCH_OMIT_FRAME_POINTER "Game code without the x29 frame chain (Switch)" ON)
+    option(FUTARI_SWITCH_FLUSH_FLOW "Flush-mode checks proven by control flow compile to nothing (Switch)" ON)
+    option(FUTARI_SWITCH_GUEST_CAS "Guest compare-and-swap without the trailing dmb (Switch)" ON)
+    option(FUTARI_SWITCH_VEC_BYTESWAP "Guest vector byte reversal as REV64 + EXT (Switch)" ON)
+    option(FUTARI_SWITCH_NEON_SHUFFLES "Constant word shuffles as one permutation (Switch)" ON)
+    option(FUTARI_SWITCH_NEON_VMX_HELPERS "vperm and float-to-integer conversions as NEON instructions (Switch)" ON)
+    set(_futari_round1_definitions "")
+    if(NOT FUTARI_SWITCH_FLUSH_FLOW)
+        list(APPEND _futari_round1_definitions REX_FLUSH_FLOW_OFF)
+    endif()
+    if(NOT FUTARI_SWITCH_GUEST_CAS)
+        list(APPEND _futari_round1_definitions REX_GUEST_CAS_LEGACY)
+    endif()
+    if(NOT FUTARI_SWITCH_VEC_BYTESWAP)
+        list(APPEND _futari_round1_definitions REX_BSWAP128_TABLE)
+    endif()
+    if(NOT FUTARI_SWITCH_NEON_SHUFFLES)
+        list(APPEND _futari_round1_definitions REX_SIMDE_SHUFFLES)
+    endif()
+    if(NOT FUTARI_SWITCH_NEON_VMX_HELPERS)
+        list(APPEND _futari_round1_definitions REX_VMX_HELPERS_X86_FORM)
+    endif()
+    # The game code, the eight game cores and the app (whose localized copies are the same generated statements).
+    foreach(target futari_recomp
+            futari_palm_normal futari_palm_abnormal futari_reco_normal futari_reco_abnormal
+            futari_hirow_normal futari_hirow_abnormal futari_kiniro_normal futari_kiniro_abnormal futari)
+        if(TARGET ${target})
+            if(_futari_round1_definitions)
+                target_compile_definitions(${target} PRIVATE ${_futari_round1_definitions})
+            endif()
+            if(FUTARI_SWITCH_OMIT_FRAME_POINTER AND NOT target STREQUAL "futari")
+                target_compile_options(${target} PRIVATE -fomit-frame-pointer)
+            endif()
+        endif()
+    endforeach()
+    # The localized copies (app/generated/hot, all compiled in one file of the app) are game code too, and the hottest
+    # of it: the same rule for that file. It only frees x29; the profile is not touched.
+    if(FUTARI_SWITCH_OMIT_FRAME_POINTER)
+        set_property(SOURCE src/native/futari_native_hot.cpp APPEND PROPERTY COMPILE_OPTIONS -fomit-frame-pointer)
+    endif()
+    message(STATUS "futari: CPU round 1: omit frame pointer ${FUTARI_SWITCH_OMIT_FRAME_POINTER}, flush flow "
+                   "${FUTARI_SWITCH_FLUSH_FLOW}, guest CAS ${FUTARI_SWITCH_GUEST_CAS}, vector byteswap "
+                   "${FUTARI_SWITCH_VEC_BYTESWAP}, NEON shuffles ${FUTARI_SWITCH_NEON_SHUFFLES}, NEON VMX helpers "
+                   "${FUTARI_SWITCH_NEON_VMX_HELPERS}, early register allocation ${FUTARI_SWITCH_EARLY_RA}")
     # Line tables for the app's own code: console profiles map to source lines with addr2line on the archived ELF. -g1
     # does not change the generated code; the NRO is made from the stripped ELF. The generated game code stays without.
     option(FUTARI_SWITCH_LINE_INFO "Line tables (-g1) for the app's own code in the Switch ELF" ON)
@@ -320,6 +594,6 @@ if(REXGLUE_PLATFORM_SWITCH)
     rexglue_switch_add_nro(futari
         NAME "Mushihimesama Futari"
         AUTHOR "ChanseyIsTheBest"
-        VERSION "1.0.0"
+        VERSION "1.0.1"
         ICON "${CMAKE_CURRENT_SOURCE_DIR}/futari_icon.jpg")
 endif()

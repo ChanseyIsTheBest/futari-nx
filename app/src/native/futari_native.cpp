@@ -3,10 +3,13 @@
 
 #include "futari_native.h"
 
+#include <atomic>
 #include <mutex>
 #include <string>
 
 #include <fmt/format.h>
+
+#include <rex/logging.h>
 
 #include "me/me_verify.h"
 
@@ -69,7 +72,40 @@ void ReportDecided(const char* what, uint32_t address, int mode, uint64_t found_
   }
 }
 
+}  // namespace futari::native
+
+#if !defined(__SWITCH__)
+// tools/flush_mode_flow.py (sasrt-nx, through sa2-nx): off the Switch every flush-mode check the control flow proved
+// redundant keeps its test (REX_FLUSH_KNOWN_ON / _OFF in the generated pch), counts itself here and calls
+// RexFlushFlowMismatch when the proof was wrong, before the mode is switched after all. So every PC run checks the
+// proofs it executes; the Switch build has no code at these places. (A game core has its own counter and reports a
+// failed proof through futari_native_core.cpp.)
+extern "C" {
+volatile unsigned long long g_rex_flush_flow_checked = 0;  // a plain lossy count: "at least this many"
+void RexFlushFlowMismatch(int on) noexcept {
+  static std::atomic<uint32_t> logged{0};
+  futari::native::ReportVerify("flush-mode flow", 0, 1);
+  if (logged.fetch_add(1, std::memory_order_relaxed) < 16) {
+    REXLOG_ERROR("[verify] DIFFERENCE: flush-mode flow: a check proven redundant had to switch the mode {} (return "
+                 "address {})", on ? "on" : "off", static_cast<const void*>(__builtin_return_address(0)));
+  }
+}
+}
+#endif
+
+namespace futari::native {
+
 std::string VerifySummary() {
+#if !defined(__SWITCH__)
+  {
+    static unsigned long long reported = 0;
+    const unsigned long long now = g_rex_flush_flow_checked;
+    if (now > reported) {
+      ReportVerify("flush-mode flow", now - reported, 0);
+      reported = now;
+    }
+  }
+#endif
   std::lock_guard lock(g_mutex);
   if (g_totals.empty()) {
     return "natives: none called";

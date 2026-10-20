@@ -59,7 +59,8 @@ bool StopRequested() {
   return g_stop;
 }
 
-void Record(std::function<rex::ui::Presenter*()> get_presenter, int start_s, int frame_count) {
+void Record(std::function<bool(rex::ui::RawImage&)> grab, std::function<uint64_t()> frames, int start_s,
+            int frame_count) {
   {
     std::unique_lock lock(g_mutex);
     if (g_cv.wait_for(lock, std::chrono::seconds(start_s), [] { return g_stop; })) {
@@ -87,11 +88,11 @@ void Record(std::function<rex::ui::Presenter*()> get_presenter, int start_s, int
   uint64_t skipped_flips = 0;  // flips that came and went while a capture was still being taken
   uint32_t width = 0, height = 0;
   const auto started = std::chrono::steady_clock::now();
-  uint64_t last = rex::kernel::xboxkrnl::GuestSwapCount();
+  uint64_t last = frames();
   REXLOG_INFO("[capture] recording {} frames from {} s", frame_count, start_s);
   while (written < frame_count && !StopRequested()) {
     // One capture per game frame, a few ms after the flip so the presenter holds the new image.
-    const uint64_t now = rex::kernel::xboxkrnl::GuestSwapCount();
+    const uint64_t now = frames();
     if (now == last || now < first_frame || (now - first_frame) % every != 0) {
       if (now != last && written) skipped_flips += now - last - 1;
       if (now != last) last = now;
@@ -103,9 +104,8 @@ void Record(std::function<rex::ui::Presenter*()> get_presenter, int start_s, int
     }
     last = now;
     std::this_thread::sleep_for(std::chrono::milliseconds(4));
-    rex::ui::Presenter* presenter = get_presenter ? get_presenter() : nullptr;
     rex::ui::RawImage image;
-    if (!presenter || !presenter->CaptureGuestOutput(image) || !image.width || !image.height ||
+    if (!grab(image) || !image.width || !image.height ||
         (width && (image.width != width || image.height != height))) {
       std::this_thread::sleep_for(std::chrono::milliseconds(5));
       continue;
@@ -171,7 +171,23 @@ void Start(std::function<rex::ui::Presenter*()> get_presenter) {
     std::lock_guard lock(g_mutex);
     g_stop = false;
   }
-  g_thread = std::thread(Record, std::move(get_presenter), int(REXCVAR_GET(futari_video_s)),
+  auto grab = [get_presenter = std::move(get_presenter)](rex::ui::RawImage& image) {
+    rex::ui::Presenter* presenter = get_presenter ? get_presenter() : nullptr;
+    return presenter && presenter->CaptureGuestOutput(image);
+  };
+  g_thread = std::thread(Record, std::move(grab), [] { return rex::kernel::xboxkrnl::GuestSwapCount(); },
+                         int(REXCVAR_GET(futari_video_s)), int(REXCVAR_GET(futari_video_frames)));
+}
+
+void Start(std::function<bool(rex::ui::RawImage&)> grab, std::function<uint64_t()> frames) {
+  if (REXCVAR_GET(futari_video_s) <= 0 || g_thread.joinable()) {
+    return;
+  }
+  {
+    std::lock_guard lock(g_mutex);
+    g_stop = false;
+  }
+  g_thread = std::thread(Record, std::move(grab), std::move(frames), int(REXCVAR_GET(futari_video_s)),
                          int(REXCVAR_GET(futari_video_frames)));
 }
 

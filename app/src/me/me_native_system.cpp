@@ -37,6 +37,14 @@
 #include <unordered_set>
 #include <vector>
 
+#include <rex/platform.h>
+#if REX_PLATFORM_SWITCH
+#include <switch.h>  // futari_vblank_display_sync: the display's vsync event
+#if FUTARI_RENUT_RENDERER
+#include "renut_engine/display_sync.h"  // DefaultWindowDisplay (its __nx_win_init holds the display)
+#endif
+#endif
+#include <rex/frame_latency.h>
 #include <rex/graphics/xenos.h>
 #include <rex/kernel/xboxkrnl/video.h>
 #include <rex/logging.h>
@@ -78,6 +86,44 @@ extern "C" uint32_t g_banjo_last_reject_cause;  // futari_native_draws.cpp (C li
 // banjo-nx: defined here (masseffect-nx defined it in me_audio_hooks.cpp, which hooks Mass Effect's audio).
 REXCVAR_DEFINE_BOOL(futari_vblank_sleep_exact, true, "Futari",
                     "Native renderer: the vblank thread sleeps until the exact next vblank instead of 1 ms steps")
+    .lifecycle(rex::cvar::Lifecycle::kInitOnly);
+
+// Input lag (2026-10-16). The game starts each frame at its vertical blank: it reads the controller, runs the frame
+// and Swaps. Until now that vblank was a timer of its own at 60 Hz, unrelated to the display: the finished image
+// waited 0 to 16.7 ms for the compositor's next refresh, a wait that slid with the drift between the two clocks
+// (and every so often a frame was shown twice or not at all). With this, on the Switch, the guest's vblank IS the
+// display's (the vi vsync event): every frame starts at a refresh and is ready for the next one.
+REXCVAR_DEFINE_BOOL(futari_vblank_display_sync, true, "Futari",
+                    "Switch: the game's vertical blank follows the display's own refresh (vi vsync event) instead "
+                    "of a 60 Hz timer of its own (input lag, judder); false = the timer")
+    .lifecycle(rex::cvar::Lifecycle::kInitOnly);
+// RetroArch's "frame delay": with the vblank locked to the display, start the frame this long after the refresh. The
+// game then reads the controller that much later and the image still makes the next refresh, as long as the frame's
+// work (game, ring, GPU) fits in what is left of the 16.7 ms. Too much and a frame misses its refresh (a stutter).
+REXCVAR_DEFINE_INT32(futari_diag_latency_trace_s, 0, "Futari",
+                     "Diagnostic: this many seconds after the renderer starts, log the order of events of 8 frames "
+                     "(guest vblank, the game thread's waits, every controller read, Swap, present, display vsync; "
+                     "rex/frame_latency.h). 0 = off")
+    .lifecycle(rex::cvar::Lifecycle::kInitOnly);
+REXCVAR_DEFINE_INT32(futari_vblank_delay_us, 0, "Futari",
+                     "Switch, with futari_vblank_display_sync and futari_vblank_phase_auto off: the game's vertical "
+                     "blank comes this many microseconds after the display's refresh (0 = at the refresh)")
+    .range(0, 12000)
+    .lifecycle(rex::cvar::Lifecycle::kInitOnly);
+// The phase found by measurement instead (2026-10-16). The game Swaps right after its vblank, and the GPU finishes
+// the frame a few ms later; the display then shows it from its next refresh. With the vblank AT the refresh the image
+// waits most of a frame for that next refresh. Each refresh the vblank thread looks at whether the newest image was
+// finished in time: after 3 s of images that were, the guest's vblank moves 0.25 ms later (closer to the next
+// refresh); an image that was not makes it 2 ms earlier and caps it there for 5 minutes. The "[latency]" line has the
+// phase and the misses.
+REXCVAR_DEFINE_BOOL(futari_vblank_phase_auto, true, "Futari",
+                    "Switch, with futari_vblank_display_sync: find the latest guest vblank after the display's refresh "
+                    "at which the image is still finished for the next refresh (less input lag); false = "
+                    "futari_vblank_delay_us")
+    .lifecycle(rex::cvar::Lifecycle::kInitOnly);
+REXCVAR_DEFINE_INT32(futari_vblank_phase_max_us, 9000, "Futari",
+                     "futari_vblank_phase_auto: the latest it may put the guest's vblank after the refresh")
+    .range(0, 14000)
     .lifecycle(rex::cvar::Lifecycle::kInitOnly);
 
 REXCVAR_DEFINE_INT32(banjo_renderdoc_capture_s, 0, "Nuts&Bolts/Graphics",
@@ -1225,7 +1271,108 @@ class NativeGraphicsSystem final : public rex::system::IGraphicsSystem {
     interrupts_.fetch_add(1, std::memory_order_relaxed);
   }
 
+  // futari_vblank_display_sync: the guest's vblank at each refresh of the display. False when the event cannot be had
+  // (the caller then runs the timer).
+  bool VblankFromDisplay() {
+#if REX_PLATFORM_SWITCH
+    if (!REXCVAR_GET(futari_vblank_display_sync) || rex::kernel::xboxkrnl::VblankPerSwap()) return false;
+    // 2026-10-20 (banjo-nx's console finding): the default window's display, opened by display_sync.cpp's
+    // __nx_win_init; the console refuses a second viOpenDefaultDisplay while the window holds it.
+    ViDisplay own{};
+#if FUTARI_RENUT_RENDERER
+    ViDisplay *display = static_cast<ViDisplay *>(banjo::display_sync::DefaultWindowDisplay());
+#else
+    ViDisplay *display = nullptr;
+#endif
+    Event vsync{};
+    if (!display) {
+      if (const Result rc = viOpenDefaultDisplay(&own); R_FAILED(rc)) {
+        REXLOG_WARN("[native] vblank: cannot open the display (0x{:X}), the 60 Hz timer stays", rc);
+        return false;
+      }
+      display = &own;
+    }
+    if (const Result rc = viGetDisplayVsyncEvent(display, &vsync); R_FAILED(rc)) {
+      REXLOG_WARN("[native] vblank: no vsync event from the display (0x{:X}), the 60 Hz timer stays", rc);
+      if (display == &own)
+        viCloseDisplay(&own);
+      return false;
+    }
+    const bool phase_auto = REXCVAR_GET(futari_vblank_phase_auto);
+    const int64_t phase_max_us = REXCVAR_GET(futari_vblank_phase_max_us);
+    int64_t delay_us = phase_auto ? 0 : REXCVAR_GET(futari_vblank_delay_us);
+    REXLOG_INFO("[native] vblank: the game's vertical blank follows the display's refresh (futari_vblank_display_sync), "
+                "{}", phase_auto ? fmt::format("its phase found by measurement, at most {} us after it "
+                                               "(futari_vblank_phase_auto)", phase_max_us)
+                                 : fmt::format("{} us after it (futari_vblank_delay_us)", delay_us));
+    uint64_t last = 0;
+    // futari_vblank_phase_auto
+    int64_t ceiling_us = phase_max_us;
+    uint64_t ceiling_until = 0;
+    uint32_t good = 0;
+    uint64_t presented_at_vsync = rex::latency::PresentedCount();
+    uint64_t phase_misses = 0, phase_report = 0;
+    uint64_t swaps_at_vblank = rex::kernel::xboxkrnl::GuestSwapCount();
+    while (active_.load(std::memory_order_acquire)) {
+      // 100 ms: should the display stop refreshing, the game still gets a vblank now and then.
+      const bool refreshed = R_SUCCEEDED(eventWait(&vsync, 100000000ull));
+      if (refreshed) {
+        eventClear(&vsync);
+        const int ready = targets_ ? targets_->LastOutputDone() : -1;
+        rex::latency::NoteDisplayVsync(ready);
+        const uint64_t presented = rex::latency::PresentedCount();
+        const bool new_image = presented != presented_at_vsync;
+        presented_at_vsync = presented;
+        if (phase_auto) {
+          const uint64_t at = armTicksToNs(armGetSystemTick());
+          if (ceiling_until && at > ceiling_until) {
+            ceiling_us = phase_max_us;
+            ceiling_until = 0;
+          }
+          if (new_image && ready == 0) {
+            // The image of this frame was not finished at the refresh: shown one later. Back off and hold.
+            ++phase_misses;
+            ceiling_us = std::max<int64_t>(delay_us - 2000, 0);
+            ceiling_until = at + 300000000000ull;
+            delay_us = ceiling_us;
+            good = 0;
+          } else if (new_image && ready == 1 && ++good >= 180) {
+            good = 0;
+            delay_us = std::min<int64_t>(delay_us + 250, ceiling_us);
+          }
+          if (++phase_report >= 600) {  // every 10 s
+            phase_report = 0;
+            REXLOG_INFO("[latency] guest vblank {:.2f} ms after the display's refresh (futari_vblank_phase_auto), "
+                        "ceiling {:.2f} ms, {} images not finished at their refresh in all", double(delay_us) / 1000.0,
+                        double(ceiling_us) / 1000.0, phase_misses);
+          }
+        }
+      }
+      // Never two vblanks closer than 8 ms (a guard: an event that did not clear would run the game at any speed).
+      const uint64_t now = armTicksToNs(armGetSystemTick());
+      if (refreshed && last && now - last < 8000000ull) continue;
+      if (delay_us > 0) svcSleepThread(int64_t(delay_us) * 1000);
+      last = now;
+      // A guest vblank without a Swap since the previous one: the game missed the frame (a frame delay too long?).
+      const uint64_t swaps = rex::kernel::xboxkrnl::GuestSwapCount();
+      if (swaps == swaps_at_vblank) rex::latency::NoteVblankWithoutSwap();
+      swaps_at_vblank = swaps;
+      rex::latency::TraceEvent("guest vblank raised");
+      counter_.fetch_add(1, std::memory_order_relaxed);
+      Interrupt(0, 2);
+      REX_SYS_COUNT(rex::syscount::kVblankTick, 1);
+    }
+    eventClose(&vsync);
+    if (display == &own)
+      viCloseDisplay(&own);
+    return true;
+#else
+    return false;
+#endif
+  }
+
   int VblankLoop() {
+    if (VblankFromDisplay()) return 0;
     rex::system::X_VIDEO_MODE mode;
     rex::kernel::xboxkrnl::VdQueryVideoMode(&mode);
     const double hz = std::max(1.0, double(float(mode.refresh_rate)));
@@ -1246,6 +1393,7 @@ class NativeGraphicsSystem final : public rex::system::IGraphicsSystem {
       if (now - next > std::chrono::milliseconds(250)) next = now;
       while (now >= next) {
         counter_.fetch_add(1, std::memory_order_relaxed);
+        rex::latency::TraceEvent("guest vblank raised (timer)");
         Interrupt(0, 2);
         next += interval;
       }
@@ -3342,6 +3490,7 @@ class NativeGraphicsSystem final : public rex::system::IGraphicsSystem {
     }
     if (targets_->Present(presenter_.get(), texture, swap_width_, swap_height_)) {
       ++presented_;
+      rex::latency::NotePresented(swaps_);  // the image of the guest's swaps_-th Swap is on its way to the display
     }
   }
 
@@ -3350,6 +3499,27 @@ class NativeGraphicsSystem final : public rex::system::IGraphicsSystem {
     if (!force && now - last_report_ < std::chrono::seconds(10)) return;
     const double secs = std::chrono::duration<double>(now - last_report_).count();
     last_report_ = now;
+    if (const std::string latency = rex::latency::Report(); !latency.empty()) {
+      REXLOG_INFO("[latency] {}", latency);
+    }
+    {  // futari_diag_latency_trace_s: the order of events of 8 frames, once
+      static bool trace_started = false;
+      const int32_t trace_at = REXCVAR_GET(futari_diag_latency_trace_s);
+      if (trace_at > 0 && !trace_started && now - start_ >= std::chrono::seconds(trace_at)) {
+        trace_started = true;
+        rex::latency::StartTrace(8);
+        REXLOG_INFO("[latency] trace of the next 8 Swaps started");
+      }
+      if (const std::string trace = rex::latency::TakeTrace(); !trace.empty()) {
+        size_t from = 0;
+        while (from < trace.size()) {
+          const size_t to = trace.find('\n', from);
+          REXLOG_INFO("[latency] trace {}", trace.substr(from, to == std::string::npos ? std::string::npos : to - from));
+          if (to == std::string::npos) break;
+          from = to + 1;
+        }
+      }
+    }
     // GPU time per category, real milliseconds per Swap of this interval: raw NVK timestamps x 1.627 on the Switch.
     if (targets_) {
       std::array<uint64_t, futari::renderer::kGpuCategories> gpu{}, frag{}, vert{}, prim{};
@@ -3405,6 +3575,7 @@ class NativeGraphicsSystem final : public rex::system::IGraphicsSystem {
     }
     ReportCensus();
     ::futari::api::Report();  // futari_api_*: the native Direct3D layer's game-thread side
+    ::futari::native::CodegenChecksReport(10);  // the generated code's self-checks (PC only)
     if (api_applied_ || api_lost_)
       REXLOG_INFO("[native] native Direct3D records applied by the ring (cumulative): {}, not found {}", api_applied_,
                   api_lost_);

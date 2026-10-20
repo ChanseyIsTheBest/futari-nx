@@ -9367,6 +9367,7 @@ const std::array<std::pair<const uint32_t*, size_t>, 9> codes_conversion{{
       }
     }
     pending_outputs_[s] = true;
+    last_output_fence_.store(fences_output_[s], std::memory_order_release);  // LastOutputDone
     context.SetIs8bpc(true);
     return true;
   }
@@ -9400,6 +9401,18 @@ const std::array<std::pair<const uint32_t*, size_t>, 9> codes_conversion{{
   std::array<bool, kSlotsOutput> pending_outputs_{};
   uint32_t output_current_ = 0;
   bool output_no_wait_ = false;
+  // LastOutputDone: the fence of the last output submitted (reset only when its slot comes round again, three
+  // outputs later).
+  std::atomic<VkFence> last_output_fence_{VK_NULL_HANDLE};
+
+ public:
+  int LastOutputDone() const override {
+    const VkFence fence = last_output_fence_.load(std::memory_order_acquire);
+    if (fence == VK_NULL_HANDLE) return -1;
+    return dfn_.vkGetFenceStatus(device_, fence) == VK_SUCCESS ? 1 : 0;
+  }
+
+ private:
   bool precise_marks_ = false;
   bool marks_categories_ = true;
   bool invalidate_each_copy_ = false;

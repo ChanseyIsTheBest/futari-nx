@@ -23,6 +23,7 @@
 #include <errno.h>
 #include <sched.h>
 
+#include <cstring>  // futari-nx: RexSwitchSetThreadMaskOf
 #include <mutex>
 #include <unordered_map>
 
@@ -274,6 +275,36 @@ void RexSwitchSetCurrentThreadPriority(int priority) {
  * Returns false if the kernel does not accept it (for example if the core is not in the process
  * mask: that is the "Too few processor cores" error seen when trying to use the fourth core).
  */
+// futari-nx (2026-10-20, from sa2-nx through banjo-nx): threading_switch.h.
+bool RexSwitchSetThreadMaskOf(void* native_handle, int preferred, unsigned long long mask) {
+  pthread_t thread;
+  static_assert(sizeof(thread) == sizeof(native_handle));
+  std::memcpy(&thread, &native_handle, sizeof(thread));
+  const RexSwitchHandle h = RexSwitchHandleFor(thread);
+  const u64 m = u64(mask) & 0x7;
+  if (h == REX_SWITCH_INVALID_HANDLE || m == 0 || preferred < 0 || !(m & (u64(1) << preferred))) return false;
+  return R_SUCCEEDED(svcSetThreadCoreMask(h, preferred, m));
+}
+
+bool RexSwitchSetCurrentThreadMask(int preferred, unsigned long long mask) {
+  Thread* yo = threadGetSelf();
+  Handle h = (yo != nullptr) ? yo->handle : CUR_THREAD_HANDLE;
+  s32 current_preferred = 0;
+  u64 current = 0;
+  if (R_FAILED(svcGetThreadCoreMask(&current_preferred, &current, h))) {
+    if (h == CUR_THREAD_HANDLE ||
+        R_FAILED(svcGetThreadCoreMask(&current_preferred, &current, CUR_THREAD_HANDLE))) {
+      return false;
+    }
+    h = CUR_THREAD_HANDLE;
+  }
+  const u64 m = u64(mask) & 0x7;  // the process's three cores
+  if (m == 0 || preferred < 0 || !(m & (u64(1) << preferred))) {
+    return false;
+  }
+  return R_SUCCEEDED(svcSetThreadCoreMask(h, preferred, m));
+}
+
 bool RexSwitchSetCurrentThreadCore(int core) {
   Thread* yo = threadGetSelf();
   Handle h = (yo != nullptr) ? yo->handle : CUR_THREAD_HANDLE;
@@ -322,6 +353,22 @@ bool RexSwitchPinCurrentThreadToCore(int core) {
     return false;  // that core is not this process's
   }
   return R_SUCCEEDED(svcSetThreadCoreMask(h, core, that_only));
+}
+
+bool RexSwitchUnpinCurrentThread(int core) {
+  u64 process_mask = 0;
+  if (R_FAILED(svcGetInfo(&process_mask, InfoType_CoreMask, CUR_PROCESS_HANDLE, 0)) || process_mask == 0) {
+    return false;
+  }
+  Thread* yo = threadGetSelf();
+  const Handle h = (yo != nullptr) ? yo->handle : CUR_THREAD_HANDLE;
+  // -1 is the kernel's "don't care" (what an unpinned thread shows); -2 would take the process's ideal core AND reduce
+  // the mask to it.
+  const s32 preferred = (core >= 0 && (process_mask & (u64(1) << core)) != 0) ? s32(core) : s32(-1);
+  if (R_SUCCEEDED(svcSetThreadCoreMask(h, preferred, process_mask))) {
+    return true;
+  }
+  return h != CUR_THREAD_HANDLE && R_SUCCEEDED(svcSetThreadCoreMask(CUR_THREAD_HANDLE, preferred, process_mask));
 }
 
 /*

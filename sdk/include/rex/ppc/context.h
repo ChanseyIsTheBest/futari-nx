@@ -20,6 +20,7 @@
 #include <rex/platform/fpscr.h>
 #include <rex/ppc/diet_ops.h>
 #include <rex/ppc/func.h>
+#include <rex/sys_counters.h>
 #include <rex/types.h>
 
 #include <simde/x86/avx.h>
@@ -96,7 +97,7 @@ struct CRRegister {
 
   inline void compare(double left, double right) noexcept {
 #ifndef REX_NO_FAST_FCMP
-    // Mass Effect diet: same truth table, but the quiet comparison builtins let one fcmp serve all four
+    // Codegen diet: same truth table, but the quiet comparison builtins let one fcmp serve all four
     // flags (the relational operators and == compiled to fcmpe and fcmp pairs plus NaN tests).
     un = __builtin_isunordered(left, right);
     lt = __builtin_isless(left, right);
@@ -182,23 +183,32 @@ struct FPSCRRegister {
   }
 
   inline void storeFromGuest(uint32_t value) noexcept {
+    REX_SYS_CENSUS((value & kRoundMask) == kRoundNearest  ? rex::syscount::kCensusRoundNearest
+                   : (value & kRoundMask) == kRoundTowardZero ? rex::syscount::kCensusRoundZero
+                                                              : rex::syscount::kCensusRoundUpDown,
+                   1);
     csr &= ~RoundMaskVal;
     csr |= Platform::GuestToHost[value & kRoundMask];
     setcsr(csr);
   }
 
   inline void enableFlushModeUnconditional() noexcept {
+    REX_SYS_CENSUS_SITE(rex::syscount::kCensusFlushWrite);
+    if ((csr & FlushMask) == FlushMask) REX_SYS_CENSUS(rex::syscount::kCensusFlushSame, 1);
     csr |= FlushMask;
     setcsr(csr);
   }
 
   inline void disableFlushModeUnconditional() noexcept {
+    REX_SYS_CENSUS_SITE(rex::syscount::kCensusFlushWrite);
+    if ((csr & FlushMask) == 0) REX_SYS_CENSUS(rex::syscount::kCensusFlushSame, 1);
     csr &= ~FlushMask;
     setcsr(csr);
   }
 
   inline void enableFlushMode() noexcept {
     if ((csr & FlushMask) != FlushMask) [[unlikely]] {
+      REX_SYS_CENSUS_SITE(rex::syscount::kCensusFlushWrite);
       csr |= FlushMask;
       setcsr(csr);
     }
@@ -206,10 +216,15 @@ struct FPSCRRegister {
 
   inline void disableFlushMode() noexcept {
     if ((csr & FlushMask) != 0) [[unlikely]] {
+      REX_SYS_CENSUS_SITE(rex::syscount::kCensusFlushWrite);
       csr &= ~FlushMask;
       setcsr(csr);
     }
   }
+
+  // tools/flush_mode_flow.py: the test of a check the control flow proved redundant (PC builds keep it).
+  inline bool flushModeIsOn() const noexcept { return (csr & FlushMask) == FlushMask; }
+  inline bool flushModeIsOff() const noexcept { return (csr & FlushMask) == 0; }
 
   inline void InitHost() noexcept {
     csr = getcsr();
@@ -449,6 +464,14 @@ struct alignas(0x40) PPCContext {
   PPCVRegister v125;
   PPCVRegister v126;
   PPCVRegister v127;
+
+  //--- Host scratch (rexglue ports; sasrt-nx 2026-10-12) --------
+  // Per-thread counters for the host's hooks, reached through the context every hook is handed: no thread_local
+  // (on the Switch each access is a call to __aarch64_read_tp) and no counter shared by all threads (a cache line
+  // bouncing between cores on every hooked call). Not guest state: never saved, restored or compared; a context
+  // copied and copied back only repeats a few counts. Zero in a new thread's context (value-initialised).
+  static constexpr size_t kHostCounters = 64;
+  uint32_t host_counters[kHostCounters];
 
   //--- Non-volatile register save/restore --------
   // Layout: r14-r31 (144) | f14-f31 (144) | v14-v31 (288) | v64-v127 (1024)

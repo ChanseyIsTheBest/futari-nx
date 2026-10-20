@@ -13,6 +13,7 @@
 // TOML config file loading
 
 #include <algorithm>
+#include <cstdio>
 #include <map>
 #include <set>
 
@@ -107,6 +108,26 @@ void ApplyToml(const toml::table& toml, RecompilerConfig& cfg, const std::string
             "dform_disp_split");
   MergeBool(cfg.fctiwzInline, toml["fctiwz_inline"].value_or(false), hasBool("fctiwz_inline"),
             "fctiwz_inline");
+  MergeBool(cfg.fpMovesModeless, toml["fp_moves_modeless"].value_or(false), hasBool("fp_moves_modeless"),
+            "fp_moves_modeless");
+  MergeBool(cfg.fpComparesModeless, toml["fp_compares_modeless"].value_or(false),
+            hasBool("fp_compares_modeless"), "fp_compares_modeless");
+  MergeBool(cfg.fpModeLookahead, toml["fp_mode_lookahead"].value_or(false), hasBool("fp_mode_lookahead"),
+            "fp_mode_lookahead");
+  MergeBool(cfg.fpModeLookaheadPastBranch, toml["fp_mode_lookahead_past_branch"].value_or(true),
+            hasBool("fp_mode_lookahead_past_branch"), "fp_mode_lookahead_past_branch");
+  MergeBool(cfg.rotateWordNarrow, toml["rotate_word_narrow"].value_or(false), hasBool("rotate_word_narrow"),
+            "rotate_word_narrow");
+  MergeBool(cfg.rotateWordShifts, toml["rotate_word_shifts"].value_or(false), hasBool("rotate_word_shifts"),
+            "rotate_word_shifts");
+  MergeBool(cfg.fctiInline, toml["fcti_inline"].value_or(false), hasBool("fcti_inline"), "fcti_inline");
+  MergeBool(cfg.fpCopyPairs, toml["fp_copy_pairs"].value_or(false), hasBool("fp_copy_pairs"), "fp_copy_pairs");
+  MergeBool(cfg.fpCopyForwarding, toml["fp_copy_forwarding"].value_or(false), hasBool("fp_copy_forwarding"),
+            "fp_copy_forwarding");
+  MergeBool(cfg.fpCopyOnlyFunctions, toml["fp_copy_only_functions"].value_or(false),
+            hasBool("fp_copy_only_functions"), "fp_copy_only_functions");
+  MergeBool(cfg.dcbtPrefetch, toml["dcbt_prefetch"].value_or(false), hasBool("dcbt_prefetch"), "dcbt_prefetch");
+  MergeBool(cfg.divInline, toml["div_inline"].value_or(false), hasBool("div_inline"), "div_inline");
   MergeBool(cfg.skipMsr, toml["skip_msr"].value_or(false), hasBool("skip_msr"), "skip_msr");
   MergeBool(cfg.ctrAsLocalVariable, toml["ctr_as_local"].value_or(false), hasBool("ctr_as_local"),
             "ctr_as_local");
@@ -409,6 +430,54 @@ void ApplyToml(const toml::table& toml, RecompilerConfig& cfg, const std::string
     }
   }
 
+  // non_volatile_as_local_exclude -> nonVolatileLocalExclude: [[start, end], ...] (banjo-nx)
+  if (auto excludeArray = toml["non_volatile_as_local_exclude"].as_array()) {
+    for (auto& entry : *excludeArray) {
+      auto* range = entry.as_array();
+      if (!range || range->size() != 2 || !(*range)[0].value<int64_t>() || !(*range)[1].value<int64_t>()) {
+        REXCODEGEN_ERROR("non_volatile_as_local_exclude: expected [start, end] pairs");
+        continue;
+      }
+      cfg.nonVolatileLocalExclude.emplace_back(static_cast<uint32_t>(*(*range)[0].value<int64_t>()),
+                                               static_cast<uint32_t>(*(*range)[1].value<int64_t>()));
+    }
+  }
+
+  // non_volatile_as_local_keep -> nonVolatileKeep*: ["v64-v77", "v92", "r30", ...] (banjo-nx)
+  if (auto keepRegs = toml["non_volatile_as_local_keep"].as_array()) {
+    for (auto& entry : *keepRegs) {
+      auto text = entry.value<std::string>();
+      unsigned first = 0, last = 0;
+      char kind = 0, kind2 = 0;
+      int n = text ? std::sscanf(text->c_str(), "%c%u-%c%u", &kind, &first, &kind2, &last) : 0;
+      if (n == 2)
+        last = first;
+      if ((n != 2 && n != 4) || (n == 4 && kind2 != kind) || last < first ||
+          (kind != 'r' && kind != 'f' && kind != 'v') || last >= (kind == 'v' ? 128u : 32u)) {
+        REXCODEGEN_ERROR("non_volatile_as_local_keep: expected \"rN\", \"fN\", \"vN\" or \"vA-vB\"");
+        continue;
+      }
+      for (unsigned i = first; i <= last; ++i) {
+        if (kind == 'r')
+          cfg.nonVolatileKeepR |= 1u << i;
+        else if (kind == 'f')
+          cfg.nonVolatileKeepF |= 1u << i;
+        else
+          cfg.nonVolatileKeepV[i / 64] |= uint64_t(1) << (i % 64);
+      }
+    }
+  }
+
+  // non_argument_as_local_keep -> nonArgumentKeep (set): functions that keep r0/r2/r11/r12/f0/v32-v63 in ctx
+  if (auto keepArray = toml["non_argument_as_local_keep"].as_array()) {
+    for (auto& entry : *keepArray) {
+      if (auto addr = entry.value<int64_t>())
+        cfg.nonArgumentKeep.insert(static_cast<uint32_t>(*addr));
+      else
+        REXCODEGEN_ERROR("non_argument_as_local_keep: expected function addresses ({})", filePath);
+    }
+  }
+
   // indirect_calls -> knownIndirectCallHints (set)
   if (auto indirectCallArray = toml["indirect_calls"].as_array()) {
     for (auto& entry : *indirectCallArray) {
@@ -567,6 +636,9 @@ RecompilerConfig::ValidationResult RecompilerConfig::Validate() const {
       result.valid = false;
     }
   }
+
+  for (uint32_t addr : nonArgumentKeep)
+    checkAlignment(addr, "non_argument_as_local_keep");
 
   // Check function address alignment
   for (const auto& [addr, size] : functions) {

@@ -1,10 +1,21 @@
-# default.xex only: functions that must keep every register in the context (no locals). The three callers of setjmp:
-# the generated code saves ctx before ppc_setjmp and restores it after a longjmp, which does not cover registers kept
-# in C++ locals (needed once non_volatile_as_local is on; harmless before).
+# default.xex only (see perf_overrides.toml, phase 2).
+#
+# non_argument_as_local_keep: the stack probe sub_8215C0B4 (frame size in r12), the C++ EH dispatch sub_82085190
+# (`mr r12,r4` = the frame, then `blrl` to the funclet), the continuation jump sub_8207C9F4 (`mr r12,r5; bctr`) and
+# sub_8219D024 (`addi r3,r11,384`: reached through a pointer only, takes r11). Guest exceptions are not dispatched in
+# this port; the path is kept exact anyway.
+non_argument_as_local_keep = [0x8215C0B4, 0x82085190, 0x8207C9F4, 0x8219D024]
+
+# Functions that keep every register in the context (no locals).
+#   sub_8208D82C: the tail of a function with a dynamic frame; it reads its owner's r31 (tools/read_before_write.py).
+# NOT the three callers of setjmp (sub_820B8C08, sub_820B9978, sub_820CDD68), which were marked here until 1.0.0
+# (harmless then: the mark does nothing without non_volatile_as_local). Two of them save their registers with
+# __savegprlr, and a normal function marked share_registers has those calls elided: it would clobber its callers'
+# r14-r31. Left as sa2-nx leaves its own: after a longjmp (the decoders' error path, corrupt image data only) the
+# generated code restores ctx, and the caller's register locals keep their values from the failing call, as the
+# CR / XER / CTR locals have since 1.0.0.
 [functions]
-"0x820B8C08" = { share_registers = true }
-"0x820B9978" = { share_registers = true }
-"0x820CDD68" = { share_registers = true }
+"0x8208D82C" = { share_registers = true }
 
 # Frame pacing without spinning (app/src/native/futari_native_frame.cpp, futari_frame_wait_sleep): a native call at the
 # top of each of sub_8216B148's two busy loops on the frame counter; it sleeps until the vertical-blank callback bumps

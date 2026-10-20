@@ -17,6 +17,7 @@
 #include <rex/logging.h>
 
 #include "native/futari_native.h"
+#include "renut_engine/futari_renut_yield.h"
 
 namespace {
 
@@ -66,6 +67,7 @@ const futari::api::Module kDefaultModule{"default",
 }  // namespace
 
 REX_HOOK_RAW(sub_8209D800) {  // D3DDevice_BeginVertices (dev, primitive type, vertex count, stride) -> vertices
+  FUTARI_RENUT_YIELD(D3DDevice_BeginVertices)  // Renut's renderer (src/renut_engine)
   static const bool same = SameCode(base, "BeginVertices", 0x8209D800u, 293, 0x702EF0A00981EF25ull);
   if (futari::d3d::CensusOn()) [[unlikely]] {  // futari_diag_d3d_census: counted, nothing converted
     futari::d3d::NoteDraw(base, ctx.r3.u32);
@@ -84,6 +86,7 @@ REX_HOOK_RAW(sub_8209D800) {  // D3DDevice_BeginVertices (dev, primitive type, v
 
 REX_EXTERN(__imp__sub_8209DCE0);
 REX_HOOK_RAW(sub_8209DCE0) {  // D3DDevice_BeginIndexedVertices -> HRESULT (indices, vertices through pointers)
+  FUTARI_RENUT_ORIGINAL(sub_8209DCE0)  // Renut's renderer has no BeginIndexedVertices: Direct3D's own
   static const bool same = SameCode(base, "BeginIndexedVertices", 0x8209DCE0u, 326, 0xB459438DC3CBAF5Dull);
   if (futari::d3d::CensusOn()) [[unlikely]] {  // futari_diag_d3d_census: counted, nothing converted
     futari::d3d::NoteDraw(base, ctx.r3.u32);
@@ -102,6 +105,7 @@ REX_HOOK_RAW(sub_8209DCE0) {  // D3DDevice_BeginIndexedVertices -> HRESULT (indi
 // Direct3D's inline-data allocator (device, words, alignment): verify mode's shadow runs of the native layer get their
 // allocations from a scratch area (futari::api::ShadowInlineAlloc); every other call is the original.
 REX_HOOK_RAW(sub_820A8138) {
+  FUTARI_RENUT_YIELD(D3D_CDevice_AllocateInlineData)
   if (futari::api::ShadowInlineAlloc(ctx, base)) return;
   if (futari::api::RedirectedInlineAlloc(ctx, base, &__imp__sub_820A8138)) return;
   const uint32_t words = ctx.r4.u32;
@@ -111,16 +115,19 @@ REX_HOOK_RAW(sub_820A8138) {
 
 // The window offset / scissor writer (device, x0, y0, x1, y1): futari_api_window_scissor.
 REX_HOOK_RAW(sub_82096B28) {
+  FUTARI_RENUT_YIELD(D3D_SetSurfaceClip)
   if (futari::api::WindowScissor(kDefaultModule, ctx, base)) return;
   __imp__sub_82096B28(ctx, base);
 }
 
 // D3DDevice_Clear and D3DDevice_Resolve through the records (futari_api_clear / futari_api_resolve).
 REX_HOOK_RAW(sub_820A19F0) {
+  FUTARI_RENUT_YIELD(D3DDevice_Clear)
   if (futari::api::Clear(kDefaultModule, ctx, base)) return;
   __imp__sub_820A19F0(ctx, base);
 }
 REX_HOOK_RAW(sub_820A2280) {
+  FUTARI_RENUT_YIELD(D3DDevice_Resolve)
   if (futari::api::Resolve(kDefaultModule, ctx, base)) return;
   __imp__sub_820A2280(ctx, base);
 }
@@ -128,6 +135,7 @@ REX_HOOK_RAW(sub_820A2280) {
 // The command buffer's space function: no submission while Direct3D code runs on the native layer's scratch area.
 REX_EXTERN(__imp__sub_820A8FC0);
 REX_HOOK_RAW(sub_820A8FC0) {
+  FUTARI_RENUT_YIELD(D3D_CDevice_KickOff)
   if (futari::api::SpaceDuringRedirect(ctx, base)) return;
   __imp__sub_820A8FC0(ctx, base);
 }

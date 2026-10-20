@@ -160,11 +160,25 @@ bool RexSwitchSetCurrentThreadPriorityOk(int priority);
 bool RexSwitchSetCurrentThreadCore(int core);
 
 /*
+ * futari-nx (2026-10-20, from sa2-nx through banjo-nx): the calling thread's core mask (the process's cores only) with
+ * 'preferred' as its preferred core (one of the mask's). False if the kernel refuses it or the mask leaves none of the
+ * process's cores.
+ */
+bool RexSwitchSetCurrentThreadMask(int preferred, unsigned long long mask);
+/* The same for another registered thread, by its pthread (Thread::native_handle()). */
+bool RexSwitchSetThreadMaskOf(void* native_handle, int preferred, unsigned long long mask);
+
+/*
  * The real pin: besides preferring that core, it forbids the others. More dangerous than
  * RexSwitchSetCurrentThreadCore (if that core saturates, the thread does not run). Returns whether
  * it was accepted.
  */
 bool RexSwitchPinCurrentThreadToCore(int core);
+
+/* banjo-nx (2026-10-16; futari-nx 2026-10-19 for Renut's renderer): undoes RexSwitchPinCurrentThreadToCore: the
+ * current thread may run on every core of the process again (the process's core mask), preferring `core` (-1: the
+ * process default). */
+bool RexSwitchUnpinCurrentThread(int core);
 
 /* Which core the calling thread is running on right now. It can only be asked about oneself. */
 int RexSwitchCurrentCore(void);

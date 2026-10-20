@@ -95,3 +95,15 @@ license terms; SPIRV-Tools Apache-2.0; SPIRV-Headers MIT).
 Mushihimesama Futari is a trademark of CAVE Interactive; the icon (`app/futari_icon.jpg`, cropped from the cover) is
 CAVE's artwork. Nintendo Switch is a trademark of Nintendo. Xbox 360 is a trademark of Microsoft. This project is not
 affiliated with or endorsed by any of them.
+
+## The deko3d renderer (app/src/renut_engine, app/thirdparty)
+
+- **reNut** (github.com/masterspike52/reNut, by reNut and masterspike52): the Direct3D-level renderer in
+  `app/src/renut_engine/gpu`, through banjo-nx's adaptation. reNut has no licence file; its author permits the user's
+  ports to reuse it.
+- **plume** (`app/thirdparty/plume`): MIT; its deko3d back end (`plume_deko3d*`) is banjo-nx's, under the same licence.
+- **uam** (`app/thirdparty/uam`): zlib (uam), MIT (the Mesa files it imports), MPL-2.0 (SwitchWakerHD's patches).
+- **reblue-XenosRecomp** (`app/thirdparty/reblue-XenosRecomp`): MIT, with its own third-party folder (zstd, xxHash,
+  smol-v, DXC) under their licences.
+- **Dear ImGui** (`app/thirdparty/imgui`, the PC build's overlay): MIT.
+- **deko3d** (devkitPro): zlib, linked from devkitPro's portlibs.

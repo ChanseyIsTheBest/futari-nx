@@ -35,10 +35,24 @@ if(NOT TARGET rex::nvk)
     # these directories, and that folder holds an older generic libvulkan.a (Mesa 26.2.1 git-012c67677c), which every
     # NRO linked until 2026-10-06 instead of the SDK's (nfsmw Mesa 26.2.2; banjo-nx's finding). Check an ELF with
     # `strings -n 8 futari | grep "Mesa 26"`.
-    target_link_libraries(rexglue_switch_nvk INTERFACE
-        "${REXGLUE_SWITCH_NVK_SDK}/lib/libvulkan.a" expat zstd z nx
-        "${REXGLUE_SWITCH_NVK_SDK}/lib/libvulkan.a" expat zstd z nx
-        stdc++ m)
+    # futari-nx (2026-10-20): REXGLUE_SWITCH_LINK_NVK OFF leaves the driver out of the link; switch_vulkan_stub.c
+    # answers the entry points the code references (no driver). The headers still come from the Mesa SDK.
+    if(NOT DEFINED REXGLUE_SWITCH_LINK_NVK)
+        set(REXGLUE_SWITCH_LINK_NVK ON)
+    endif()
+    if(REXGLUE_SWITCH_LINK_NVK)
+        target_link_libraries(rexglue_switch_nvk INTERFACE
+            "${REXGLUE_SWITCH_NVK_SDK}/lib/libvulkan.a" expat zstd z nx
+            "${REXGLUE_SWITCH_NVK_SDK}/lib/libvulkan.a" expat zstd z nx
+            stdc++ m)
+    else()
+        if(NOT TARGET rexglue_switch_vulkan_stub)
+            add_library(rexglue_switch_vulkan_stub OBJECT "${CMAKE_CURRENT_LIST_DIR}/../src/ui/switch_vulkan_stub.c")
+            target_include_directories(rexglue_switch_vulkan_stub PRIVATE "${REXGLUE_SWITCH_NVK_SDK}/include")
+        endif()
+        target_link_libraries(rexglue_switch_nvk INTERFACE
+            $<TARGET_OBJECTS:rexglue_switch_vulkan_stub> expat zstd z nx stdc++ m)
+    endif()
     target_link_options(rexglue_switch_nvk INTERFACE -pthread)
 endif()
 

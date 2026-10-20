@@ -17,6 +17,7 @@
 
 #include <rex/cvar.h>
 #include <rex/hook.h>
+#include "renut_engine/futari_renut_yield.h"
 #include <rex/logging.h>
 
 #include <atomic>
@@ -171,6 +172,7 @@ extern "C" __attribute__((visibility("default"))) void FutariWaitD3DGpuProgress(
 
 REX_EXTERN(__imp__sub_820A4590);
 REX_HOOK_RAW(sub_820A4590) {
+  FUTARI_RENUT_YIELD(D3D_CBlocker_Check)  // Renut's renderer: its own wait (src/renut_engine)
   // The code check of the framework (src/native/futari_native.h): only the bytes this was written for.
   static const bool same_code = [base] {
     uint64_t h = 0xcbf29ce484222325ull;

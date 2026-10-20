@@ -105,6 +105,14 @@ void CensusSegment(const uint8_t* base, int after);
 void CensusNoteDraw(const uint8_t* base, uint32_t device);
 // Executable only: "natives: memcpy 1234/0 ..." (checks/differences per native) for the "[verify]" line.
 std::string VerifySummary();
+// futari_codegen_checks.cpp: the PC side of the post-codegen steps (nothing on the Switch). Init reads the diagnostic
+// keys once the config is loaded; Report runs with the renderer's 10 s report.
+void CodegenChecksInit();
+void CodegenChecksReport(int seconds);
+// futari_forms_selfcheck.cpp: the instruction forms only one processor has, against plain C++ references, at every
+// start (on the console: the first time the AArch64 forms run). One "[verify]" line; a failure also leaves
+// futari_selfcheck_failed.txt next to the program.
+void FormsSelfCheck();
 
 inline bool FlagOn(const char* key) {
   const std::string value = rex::cvar::GetFlagByName(key);

@@ -220,7 +220,7 @@ bool build_ldarx(BuilderContext& ctx) {
 //=============================================================================
 
 bool build_lfd(BuilderContext& ctx) {
-  ctx.emit_set_flush_mode(false);
+  ctx.emit_flush_mode_for_move();
   std::string macro = "REX_LOAD_U64";
   const std::string args = ctx.d_form_args(macro, false);
   ctx.println("\t{}.u64 = {}({});", ctx.f(ctx.insn.operands[0]), macro, args);
@@ -228,7 +228,7 @@ bool build_lfd(BuilderContext& ctx) {
 }
 
 bool build_lfdx(BuilderContext& ctx) {
-  ctx.emit_set_flush_mode(false);
+  ctx.emit_flush_mode_for_move();
   ctx.print("\t{}.u64 = REX_LOAD_U64(", ctx.f(ctx.insn.operands[0]));
   if (ctx.insn.operands[1] != 0)
     ctx.print("{}.u32 + ", ctx.r(ctx.insn.operands[1]));
@@ -237,27 +237,47 @@ bool build_lfdx(BuilderContext& ctx) {
 }
 
 bool build_lfs(BuilderContext& ctx) {
-  ctx.emit_set_flush_mode(false);
+  const bool pair = ctx.float_copy_pair_load();
+  const bool any_mode = !pair && ctx.single_conversion_any_mode();
   std::string macro = "REX_LOAD_U32";
   const std::string args = ctx.d_form_args(macro, false);
+  if (pair) {
+    // The bits in the register's own local: its stores may come after other loads and stores.
+    const std::string bits = ctx.f_bits(ctx.insn.operands[0]);
+    ctx.println("\t{}.u32 = {}({});", bits, macro, args);
+    ctx.println("\t{}.f64 = rex::ppc::SingleToDoublePure({}.u32);", ctx.f(ctx.insn.operands[0]), bits);
+    return true;
+  }
   ctx.println("\t{}.u32 = {}({});", ctx.temp(), macro, args);
-  ctx.println("\t{}.f64 = double({}.f32);", ctx.f(ctx.insn.operands[0]), ctx.temp());
+  if (any_mode)
+    ctx.println("\t{}.f64 = rex::ppc::SingleToDoubleAnyMode({}.u32);", ctx.f(ctx.insn.operands[0]),
+                ctx.temp());
+  else
+    ctx.println("\t{}.f64 = double({}.f32);", ctx.f(ctx.insn.operands[0]), ctx.temp());
   return true;
 }
 
 bool build_lfsx(BuilderContext& ctx) {
-  ctx.emit_set_flush_mode(false);
-  ctx.print("\t{}.u32 = REX_LOAD_U32(", ctx.temp());
+  const bool pair = ctx.float_copy_pair_load();
+  const bool any_mode = !pair && ctx.single_conversion_any_mode();
+  const std::string bits = pair ? ctx.f_bits(ctx.insn.operands[0]) : std::string(ctx.temp());
+  ctx.print("\t{}.u32 = REX_LOAD_U32(", bits);
   if (ctx.insn.operands[1] != 0)
     ctx.print("{}.u32 + ", ctx.r(ctx.insn.operands[1]));
   ctx.println("{}.u32);", ctx.r(ctx.insn.operands[2]));
-  ctx.println("\t{}.f64 = double({}.f32);", ctx.f(ctx.insn.operands[0]), ctx.temp());
+  if (pair)
+    ctx.println("\t{}.f64 = rex::ppc::SingleToDoublePure({}.u32);", ctx.f(ctx.insn.operands[0]), bits);
+  else if (any_mode)
+    ctx.println("\t{}.f64 = rex::ppc::SingleToDoubleAnyMode({}.u32);", ctx.f(ctx.insn.operands[0]),
+                ctx.temp());
+  else
+    ctx.println("\t{}.f64 = double({}.f32);", ctx.f(ctx.insn.operands[0]), ctx.temp());
   return true;
 }
 
 bool build_lfdu(BuilderContext& ctx) {
   // Load Floating-point Double with Update
-  ctx.emit_set_flush_mode(false);
+  ctx.emit_flush_mode_for_move();
   ctx.println("\t{} = {} + {}.u32;", ctx.ea(), static_cast<int32_t>(ctx.insn.operands[1]),
               ctx.r(ctx.insn.operands[2]));
   ctx.println("\t{}.u64 = REX_LOAD_U64({});", ctx.f(ctx.insn.operands[0]), ctx.ea());
@@ -267,7 +287,7 @@ bool build_lfdu(BuilderContext& ctx) {
 
 bool build_lfdux(BuilderContext& ctx) {
   // Load Floating-point Double with Update Indexed
-  ctx.emit_set_flush_mode(false);
+  ctx.emit_flush_mode_for_move();
   ctx.println("\t{} = {}.u32 + {}.u32;", ctx.ea(), ctx.r(ctx.insn.operands[1]),
               ctx.r(ctx.insn.operands[2]));
   ctx.println("\t{}.u64 = REX_LOAD_U64({});", ctx.f(ctx.insn.operands[0]), ctx.ea());
@@ -277,22 +297,30 @@ bool build_lfdux(BuilderContext& ctx) {
 
 bool build_lfsu(BuilderContext& ctx) {
   // Load Floating-point Single with Update (convert to double)
-  ctx.emit_set_flush_mode(false);
+  const bool any_mode = ctx.single_conversion_any_mode();
   ctx.println("\t{} = {} + {}.u32;", ctx.ea(), static_cast<int32_t>(ctx.insn.operands[1]),
               ctx.r(ctx.insn.operands[2]));
   ctx.println("\t{}.u32 = REX_LOAD_U32({});", ctx.temp(), ctx.ea());
-  ctx.println("\t{}.f64 = double({}.f32);", ctx.f(ctx.insn.operands[0]), ctx.temp());
+  if (any_mode)
+    ctx.println("\t{}.f64 = rex::ppc::SingleToDoubleAnyMode({}.u32);", ctx.f(ctx.insn.operands[0]),
+                ctx.temp());
+  else
+    ctx.println("\t{}.f64 = double({}.f32);", ctx.f(ctx.insn.operands[0]), ctx.temp());
   ctx.println("\t{}.u32 = {};", ctx.r(ctx.insn.operands[2]), ctx.ea());
   return true;
 }
 
 bool build_lfsux(BuilderContext& ctx) {
   // Load Floating-point Single with Update Indexed (convert to double)
-  ctx.emit_set_flush_mode(false);
+  const bool any_mode = ctx.single_conversion_any_mode();
   ctx.println("\t{} = {}.u32 + {}.u32;", ctx.ea(), ctx.r(ctx.insn.operands[1]),
               ctx.r(ctx.insn.operands[2]));
   ctx.println("\t{}.u32 = REX_LOAD_U32({});", ctx.temp(), ctx.ea());
-  ctx.println("\t{}.f64 = double({}.f32);", ctx.f(ctx.insn.operands[0]), ctx.temp());
+  if (any_mode)
+    ctx.println("\t{}.f64 = rex::ppc::SingleToDoubleAnyMode({}.u32);", ctx.f(ctx.insn.operands[0]),
+                ctx.temp());
+  else
+    ctx.println("\t{}.f64 = double({}.f32);", ctx.f(ctx.insn.operands[0]), ctx.temp());
   ctx.println("\t{}.u32 = {};", ctx.r(ctx.insn.operands[1]), ctx.ea());
   return true;
 }
@@ -445,7 +473,7 @@ bool build_stdux(BuilderContext& ctx) {
 //=============================================================================
 
 bool build_stfd(BuilderContext& ctx) {
-  ctx.emit_set_flush_mode(false);
+  ctx.emit_flush_mode_for_move();
   const bool mmio = ctx.mmio_check_d_form();
   std::string macro = mmio ? "REX_MM_STORE_U64" : "REX_STORE_U64";
   const std::string args = ctx.d_form_args(macro, mmio);
@@ -454,7 +482,7 @@ bool build_stfd(BuilderContext& ctx) {
 }
 
 bool build_stfdx(BuilderContext& ctx) {
-  ctx.emit_set_flush_mode(false);
+  ctx.emit_flush_mode_for_move();
   ctx.print("{}", ctx.mmio_check_x_form() ? "\tREX_MM_STORE_U64(" : "\tREX_STORE_U64(");
   if (ctx.insn.operands[1] != 0)
     ctx.print("{}.u32 + ", ctx.r(ctx.insn.operands[1]));
@@ -464,7 +492,7 @@ bool build_stfdx(BuilderContext& ctx) {
 
 bool build_stfdux(BuilderContext& ctx) {
   // Store Floating-point Double with Update Indexed: EA = rA + rB; MEM(EA) = FRS; rA = EA
-  ctx.emit_set_flush_mode(false);
+  ctx.emit_flush_mode_for_move();
   ctx.println("\t{} = {}.u32 + {}.u32;", ctx.ea(), ctx.r(ctx.insn.operands[1]),
               ctx.r(ctx.insn.operands[2]));
   ctx.println("\tREX_STORE_U64({}, {}.u64);", ctx.ea(), ctx.f(ctx.insn.operands[0]));
@@ -473,7 +501,7 @@ bool build_stfdux(BuilderContext& ctx) {
 }
 
 bool build_stfiwx(BuilderContext& ctx) {
-  ctx.emit_set_flush_mode(false);
+  ctx.emit_flush_mode_for_move();
   ctx.print("{}", ctx.mmio_check_x_form() ? "\tREX_MM_STORE_U32(" : "\tREX_STORE_U32(");
   if (ctx.insn.operands[1] != 0)
     ctx.print("{}.u32 + ", ctx.r(ctx.insn.operands[1]));
@@ -481,9 +509,28 @@ bool build_stfiwx(BuilderContext& ctx) {
   return true;
 }
 
+// fp_copy_pairs: the stored bits, the sign operations between included (fp_copy_forwarding).
+std::string CopyStoreBits(BuilderContext& ctx, const FloatCopySign& sign) {
+  std::string bits = fmt::format("rex::ppc::QuietSingleBits({}.u32)", ctx.f_bits(ctx.insn.operands[0]));
+  if (sign.keep != 0xFFFFFFFFu)
+    bits = fmt::format("({} & 0x{:08X}u)", bits, sign.keep);
+  if (sign.flip != 0)
+    bits = fmt::format("({} ^ 0x{:08X}u)", bits, sign.flip);
+  return bits;
+}
+
 bool build_stfs(BuilderContext& ctx) {
-  ctx.emit_set_flush_mode(false);
-  ctx.println("\t{}.f32 = float({}.f64);", ctx.temp(), ctx.f(ctx.insn.operands[0]));
+  // fp_copy_pairs: the register's bits local still holds what its lfs loaded.
+  FloatCopySign sign;
+  const bool pair = ctx.float_copy_pair_store(&sign);
+  const bool any_mode = !pair && ctx.single_conversion_any_mode();
+  if (pair)
+    ctx.println("\t{}.u32 = {};", ctx.temp(), CopyStoreBits(ctx, sign));
+  else if (any_mode)
+    ctx.println("\t{}.f32 = rex::ppc::DoubleToSingleAnyMode({}.f64);", ctx.temp(),
+                ctx.f(ctx.insn.operands[0]));
+  else
+    ctx.println("\t{}.f32 = float({}.f64);", ctx.temp(), ctx.f(ctx.insn.operands[0]));
   const bool mmio = ctx.mmio_check_d_form();
   std::string macro = mmio ? "REX_MM_STORE_U32" : "REX_STORE_U32";
   const std::string args = ctx.d_form_args(macro, mmio);
@@ -492,8 +539,16 @@ bool build_stfs(BuilderContext& ctx) {
 }
 
 bool build_stfsx(BuilderContext& ctx) {
-  ctx.emit_set_flush_mode(false);
-  ctx.println("\t{}.f32 = float({}.f64);", ctx.temp(), ctx.f(ctx.insn.operands[0]));
+  FloatCopySign sign;
+  const bool pair = ctx.float_copy_pair_store(&sign);
+  const bool any_mode = !pair && ctx.single_conversion_any_mode();
+  if (pair)
+    ctx.println("\t{}.u32 = {};", ctx.temp(), CopyStoreBits(ctx, sign));
+  else if (any_mode)
+    ctx.println("\t{}.f32 = rex::ppc::DoubleToSingleAnyMode({}.f64);", ctx.temp(),
+                ctx.f(ctx.insn.operands[0]));
+  else
+    ctx.println("\t{}.f32 = float({}.f64);", ctx.temp(), ctx.f(ctx.insn.operands[0]));
   ctx.print("{}", ctx.mmio_check_x_form() ? "\tREX_MM_STORE_U32(" : "\tREX_STORE_U32(");
   if (ctx.insn.operands[1] != 0)
     ctx.print("{}.u32 + ", ctx.r(ctx.insn.operands[1]));
@@ -503,7 +558,7 @@ bool build_stfsx(BuilderContext& ctx) {
 
 bool build_stfdu(BuilderContext& ctx) {
   // Store Floating-point Double with Update
-  ctx.emit_set_flush_mode(false);
+  ctx.emit_flush_mode_for_move();
   ctx.println("\t{} = {} + {}.u32;", ctx.ea(), static_cast<int32_t>(ctx.insn.operands[1]),
               ctx.r(ctx.insn.operands[2]));
   ctx.println("\tREX_STORE_U64({}, {}.u64);", ctx.ea(), ctx.f(ctx.insn.operands[0]));
@@ -513,10 +568,14 @@ bool build_stfdu(BuilderContext& ctx) {
 
 bool build_stfsu(BuilderContext& ctx) {
   // Store Floating-point Single with Update (convert double to float first)
-  ctx.emit_set_flush_mode(false);
+  const bool any_mode = ctx.single_conversion_any_mode();
   ctx.println("\t{} = {} + {}.u32;", ctx.ea(), static_cast<int32_t>(ctx.insn.operands[1]),
               ctx.r(ctx.insn.operands[2]));
-  ctx.println("\t{}.f32 = float({}.f64);", ctx.temp(), ctx.f(ctx.insn.operands[0]));
+  if (any_mode)
+    ctx.println("\t{}.f32 = rex::ppc::DoubleToSingleAnyMode({}.f64);", ctx.temp(),
+                ctx.f(ctx.insn.operands[0]));
+  else
+    ctx.println("\t{}.f32 = float({}.f64);", ctx.temp(), ctx.f(ctx.insn.operands[0]));
   ctx.println("\tREX_STORE_U32({}, {}.u32);", ctx.ea(), ctx.temp());
   ctx.println("\t{}.u32 = {};", ctx.r(ctx.insn.operands[2]), ctx.ea());
   return true;
@@ -524,8 +583,12 @@ bool build_stfsu(BuilderContext& ctx) {
 
 bool build_stfsux(BuilderContext& ctx) {
   // Store Floating-point Single with Update Indexed
-  ctx.emit_set_flush_mode(false);
-  ctx.println("\t{}.f32 = float({}.f64);", ctx.temp(), ctx.f(ctx.insn.operands[0]));
+  const bool any_mode = ctx.single_conversion_any_mode();
+  if (any_mode)
+    ctx.println("\t{}.f32 = rex::ppc::DoubleToSingleAnyMode({}.f64);", ctx.temp(),
+                ctx.f(ctx.insn.operands[0]));
+  else
+    ctx.println("\t{}.f32 = float({}.f64);", ctx.temp(), ctx.f(ctx.insn.operands[0]));
   ctx.println("\t{} = {}.u32 + {}.u32;", ctx.ea(), ctx.r(ctx.insn.operands[1]),
               ctx.r(ctx.insn.operands[2]));
   ctx.println("\t{}({}, {}.u32);", ctx.mmio_check_x_form() ? "REX_MM_STORE_U32" : "REX_STORE_U32",

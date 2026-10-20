@@ -22,4 +22,6 @@
 inline bool RexSwitchSetCurrentThreadPriorityOk(int) { return true; }
 inline int RexSwitchCurrentCore() { return -1; }
 inline bool RexSwitchSetCurrentThreadCore(int) { return true; }
+inline bool RexSwitchPinCurrentThreadToCore(int) { return true; }
+inline bool RexSwitchUnpinCurrentThread(int) { return true; }
 #endif

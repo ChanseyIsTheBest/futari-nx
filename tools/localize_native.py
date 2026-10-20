@@ -29,7 +29,11 @@ import sys
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 REG = re.compile(r'\bctx\.(r\d+|f\d+|v\d+)\b')
 CALL = re.compile(r'\b((?:__imp__)?(sub_[0-9A-F]{8})|__(?:save|rest)[a-z]+_\d+)\(ctx, base\);')
-INDIRECT = re.compile(r'\bREX_CALL_INDIRECT_FUNC\(')
+INDIRECT = re.compile(r'\bREX_CALL_INDIRECT_FUNC(?:_AT)?\(')
+# A leaf function rewritten by tools/leaf_locals.py no longer says ctx.<register>: its declarations name the registers.
+LEAF_REG = re.compile(r'\bREX_LEAF_LOCAL\(\w+, l_\w+, (\w+)\)')
+# tools/indirect_calls.py: a promoted call names its target's hookable symbol in its PC self-check.
+PROMOTED = re.compile(r'\bREX_PROMOTED_CALL\(0x[0-9A-F]{8}, (sub_[0-9A-F]{8})\)')
 
 
 def find_body(folder, name):
@@ -37,8 +41,27 @@ def find_body(folder, name):
         text = open(path, encoding='utf-8', errors='replace').read()
         m = re.search(r'^DEFINE_REX_FUNC\(' + name + r'\) \{\n(.*?)^\}\n', text, re.S | re.M)
         if m:
-            return m.group(1), path
+            return unleaf(m.group(1)), path
     return None, None
+
+
+def unleaf(body):
+    """The function's text as it was before tools/leaf_locals.py (which runs after this tool in a fresh tree, but
+    before it when tools/post_codegen.py is run again on a tree it already processed): ctx.<register> again, without
+    the declarations and the stores before the returns. This tool then makes its own locals of them. (sa2-nx's.)"""
+    regs = LEAF_REG.findall(body)
+    if not regs:
+        return body
+    names = re.compile(r'\bl_(%s)\b' % '|'.join(re.escape(r) for r in regs))
+    out = []
+    for l in body.split('\n'):
+        if re.match(r'\tREX_LEAF_LOCAL\(', l) or re.match(r'\t(?:REX_LEAF_STORE\(l_\w+, \w+\);\s?)+$', l):
+            continue
+        l = re.sub(r'\{ (?:REX_LEAF_STORE\(l_\w+, \w+\); )+return; \}', 'return;', l)
+        out.append(names.sub(lambda m: 'ctx.' + m.group(1), l))
+    if 'REX_LEAF_' in '\n'.join(out):
+        sys.exit('localize_native: a leaf-local form this tool does not know (tools/leaf_locals.py changed?)')
+    return '\n'.join(out)
 
 
 def type_of(reg):
@@ -71,7 +94,8 @@ def emit(addr, module, what, body, rel, record, localized):
         code.append(l)
     code.append('\tFUTARI_SYNC_OUT();')
     decl = '\n'.join(f'  {type_of(r)} l_{r} = ctx.{r};' for r in regs)
-    externs = ''.join(f'REX_EXTERN({c});\n' for c in sorted({m.group(1) for m in CALL.finditer(body)}))
+    externs = ''.join(f'REX_EXTERN({c});\n' for c in sorted({m.group(1) for m in CALL.finditer(body)} |
+                                                            {m.group(1) for m in PROMOTED.finditer(body)}))
     fn = 'Record' if record else 'Native'
     head = 'inline void Native' if not record else 'void Record'
     return f'''// sub_{addr} ({module}): {what}. {fn}() for futari_native_hot.cpp.

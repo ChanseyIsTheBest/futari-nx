@@ -1,0 +1,27 @@
+# default: guest functions whose A57 code is cheaper WITHOUT the loop / leaf locals (tools/codegen_choice.py,
+# 2026-10-19; the Switch build's compile line without LTO, loop-weighted cost, off cheaper by more than
+# 2.0 %). "<tool> <name>": tool = loop (tools/loop_locals.py) or leaf (tools/leaf_locals.py).
+leaf sub_820B3930
+leaf sub_82189808
+loop sub_8208A980
+loop sub_8209E428
+loop sub_820BA1E0
+loop sub_820D0658
+loop sub_820D2400
+loop sub_820D8318
+loop sub_820DBF30
+loop sub_820E7858
+loop sub_820EB558
+loop sub_820EB6A0
+loop sub_820EF0C0
+loop sub_8210BF58
+loop sub_8211B2E0
+loop sub_8211B8F8
+loop sub_82131140
+loop sub_821320F0
+loop sub_821335B8
+loop sub_8213DA28
+loop sub_82141AB8
+loop sub_82166000
+loop sub_821751C8
+loop sub_82190658

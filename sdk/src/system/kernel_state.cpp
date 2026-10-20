@@ -42,6 +42,7 @@
 #include <rex/system/xsemaphore.h>
 #include <rex/system/xthread.h>
 #include <rex/system/xtimer.h>
+#include <rex/sys_counters.h>
 
 namespace rex::system {
 
@@ -52,9 +53,12 @@ constexpr uint32_t kDeferredOverlappedDelayMillis = 100;
 // be using to stash their variables.
 KernelState* shared_kernel_state_ = nullptr;
 
+#if defined(_WIN32)
 KernelState* kernel_state() {
+  REX_SYS_CENSUS(rex::syscount::kCensusKernelState, 1);
   return shared_kernel_state_;
 }
+#endif
 
 KernelState::KernelState(Runtime* emulator)
     : emulator_(emulator),

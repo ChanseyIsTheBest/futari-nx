@@ -79,6 +79,9 @@ class TargetsNative {
   virtual void WaitUploads() = 0;
   // Vertex copies queued and not done yet (only to measure the fences).
   virtual size_t PendingCopies() const { return 0; }
+  // Whether the GPU has finished the last output (the image the display gets): 1 yes, 0 no, -1 none yet. From any
+  // thread (rex/frame_latency.h, at the display's vsync).
+  virtual int LastOutputDone() const { return -1; }
   // Copies, clears, presented Swaps and rejected operations, accumulated.
   virtual void Stats(uint64_t& copies, uint64_t& cleared, uint64_t& presented,
                             uint64_t& rejections) const = 0;

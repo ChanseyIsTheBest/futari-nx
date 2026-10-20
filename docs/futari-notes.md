@@ -697,6 +697,14 @@ samples' slope, > 6x the frames' mean |second difference| and > 0.03: 339 edges 
 second; 45 instead of 37 in the burst). Every other sample is unchanged (checked on the burst: only the treated frames
 differ). out/audio_compare/burst_535s_{off,v1,smooth,predict,both}.wav are the burst with each setting.
 
+### Two players (2026-10-14)
+
+Tested on the PC after peggle2-nx found that its game needs a second signed-in user for player 2: Futari does not.
+With two scripted pads (`p2:` steps: `72:p2:start,...,82-120:p2:a`) in Ver 1.5 Xbox 360 mode, player 2 joins during
+play: its own score and counter on the right and a second ship. The game imports XamShowSigninUI but never called it
+(0 calls in the log); no SDK change is needed. Not tested on the console (the controller assignment there is the SDK's
+Switch input driver, sa2-nx's).
+
 ### The installer and its shader library (2026-10-08 night)
 
 futari-nx-installer (sa2-nx-installer's design) makes the SD folder in the browser from the player's disc image: the
@@ -764,6 +772,759 @@ nine executables with the same steps as the tools here, in JavaScript and WebAss
   reconfigure runs without clang on the PATH and without PROCESSOR_ARCHITECTURE: it cached an empty processor
   ("Unsupported Windows architecture") and msys's ninja. Repair: delete out\pc\CMakeFiles\<cmake version> and
   `cmake --preset win-pc -DCMAKE_MAKE_PROGRAM=<VS ninja>` from app\ in that PowerShell.
+  **That repair was not complete (found 2026-10-14).** The broken configure had also cached the C++ per-configuration
+  flags as empty (`CMAKE_CXX_FLAGS_RELWITHDEBINFO=`, where a fresh tree has `-O2 -DNDEBUG`; the C ones were right), so
+  every PC executable from 2026-10-08 to 2026-10-14 was built without optimisation: 27 MB instead of 12, and slow
+  enough to make the game skip more frames, which is why the lockstep runs "got noisier after the full rebuild".
+  Results of those runs stand (same sources, same arithmetic), their timings do not. Found by comparing
+  `CMakeCache.txt` with the fresh 1.0.0 reference tree's; repaired by setting the four `CMAKE_CXX_FLAGS_<CONFIG>`
+  back. After any cache accident: `grep -c -- -O2 out/pc/build.ninja` (1,236 in a sound tree, 497 in the damaged one).
+
+### Long sessions: the texture view slots (2026-10-14, `futari_native_texture_slots_evict`; sa2-nx's finding)
+
+sa2-nx's players reported black textures and missing geometry after three to four hours; its cause was the 2D texture
+view heap of this renderer: 4,096 descriptor slots (`kCapacityHeap = {4096, 16, 64, 512}`), and `ReserveSlot` answered
+0 when they were used up, which is an empty texture from then on. The texture cache evicts by bytes and by age of use,
+not by slots, so a session that keeps loading new textures faster than old ones age out runs into it. Futari has the
+same code and no report yet.
+- **What:** a heap more than 3/4 full sheds its coldest textures (unused for 120 frames, not being uploaded) in
+  batches of 32 every 16 frames until it is under 5/8; a heap that did refuse a slot drops an eighth of its capacity
+  at the next Swap. `[native] C3 texture slots (...)` every 600 frames says how full each heap is, how many textures
+  and megabytes the cache holds, how many were dropped for slots and how many views found no slot.
+- **Exact:** a dropped texture is created again from guest memory at its next use, as after the cache's own eviction.
+- **Tests (PC):** `futari_diag_texture_slots` limits the 2D heap. About 91 to 100 slots are render-target views the
+  texture cache does not own, so a limit of 100 cannot be met by any eviction (that test only showed the limit is
+  enforced). With 300: 483 textures dropped for slots, 0 views without a slot, lockstep 532 of 541 labels identical
+  (the rest the known timing labels); with the key off at the same limit 1,559 views found no slot. Default limit:
+  nothing is dropped (506 of 513).
+- **Not ported:** sa2-nx's release of idle resolved textures (`sa2_native_resolved_retire_idle`). Its console answer
+  was that it did not cure the reports, and Futari's resolved-image count stays flat (93 to 99 in every PC run,
+  the two replays included): the game keeps its render targets for the whole session.
+
+### The CPU rounds of 1.0.1 (2026-10-14: sa2-nx's three rounds, on nine modules)
+
+The user's request after 1.0.0: "may as well do all the codegen improvements as well and the other adventure 2 fixes
+that are relevant". sa2-nx 1.0.1 carries three rounds of CPU work on the generated code (its `docs/cpu-rounds.md`;
+the first is sasrt-nx's). All of it is build-time: the Switch build gets fewer instructions for the same statements,
+and the PC build keeps the old operation next to each new one and compares them while it runs.
+
+**The SDK** is at sa2-nx 1.0.1's level (its commits f104e18..8be5b45 merged three ways; the generator's files taken
+whole, `project_recompiler.cpp` with Futari's DLL handling kept). Regenerating with unchanged options gave the 1.0.0
+text again (stamps and one new macro aside), so the merge by itself changed nothing. `sdk/tests` are sa2-nx's ten
+(`tools\win\run_sdk_tests.ps1`: 0 failed; the conversions 17.4 billion checks, the any-mode float helpers 600 million).
+
+**Two corrections of 1.0.0** (both from the other ports' audits):
+- `fctid` / `fctiw` rounded halves away from zero on the Switch: simde's portable `cvtsd_si64/32` is `round()`
+  there (`fcvtas`), where the 360 and x86 round in the current mode (to even). 26 `fcvtas` in 14 recompiled
+  functions of the 1.0.0 ELF, two of them the hot float-to-integer helpers n_8207AE60 / n_8207AF40. The generator
+  option `fcti_inline` writes `rex::ppc::fctid` (`frinti` + `fcvtzs`). `tools/check_switch_build.py` now fails on
+  any `fcvtas` in recompiled code.
+- `-fno-trapping-math` is off (`FUTARI_GAME_NO_TRAPPING_MATH`): it lets GCC run a float operation earlier than the
+  code does, across a change of the host's flush mode the compiler does not know about. `-fno-math-errno` stays.
+
+**Generator options** (`app/perf_overrides.toml`): `fp_moves_modeless`, `fp_compares_modeless`, `fp_mode_lookahead`
+(not past a branch), `fcti_inline`, `fp_copy_pairs`, `div_inline`.
+
+**Post-codegen steps** (`tools/post_codegen.py`, sa2-nx's order; each a rename into macros of the generated pch with
+a compile-time switch back, `FUTARI_SWITCH_*` / `FUTARI_GEN_*`). Counts for default.xex / one game core:
+
+| Step | What | default.xex | a core |
+|---|---|---|---|
+| `indirect_calls.py` | every `bctrl` tagged with its site (PC census); listed sites as a guarded direct call | 2,490 sites | 180 |
+| `loop_barriers.py` | no barrier where a loop has nothing to protect | 3,450 of 4,987 headers keep one | 2,746 of 3,531 |
+| `pch_cold_traps.py` | the trap helper out of line and cold | 1,316 sites | 23 |
+| `guest_cas.py` | compare-and-swap without the trailing `dmb ish` | 152 | 9 |
+| `flush_mode_flow.py` | flush-mode checks the control flow proves (entry modes for default.xex only: a core is entered through its export table) | 2,084 of 3,781 | 33 of 115 |
+| `vec_byteswap.py` | 16-byte reversal as REV64 + EXT | 5,268 | 378 |
+| `pch_neon_shuffles.py` | constant word shuffles as one permutation | pch | pch |
+| `ro_constants.py` | loads from `.rdata` as constants | 2,031 | 102 |
+| `float_loads.py` | a single load straight into a float register | 5,083 | 89 |
+| `loop_locals.py` | ctx registers of a call-free loop as locals | 8,463 registers in 1,472 loops | 3,501 in 984 |
+| `leaf_locals.py` | ctx registers of leaf functions with loops as locals | 1,839 in 167 functions | 1,545 in 180 |
+
+The localized hot copies (`tools/localize_native.py`) are made from the processed text by the same script: they had
+been left at their text of 2026-10-07 by the first regeneration of this round, which the hot guard cannot see (a
+stale copy is still a correct copy). The sequence is idempotent (a second run leaves every file's hash unchanged).
+sa2-nx's `frame_traffic.py` is not run at all: its elisions change what stale data the guest's stack frames hold.
+
+**Import records are never folded (found here, 2026-10-14).** `ro_constants.py` folds any load whose address lies
+in a read-only `.rdata`. A XEX's import records are words of the image the loader rewrites, and in these
+executables they stand at the START of `.rdata` (default.xex: 82000400 onwards; `.idata` holds something else). The
+loader leaves a function's record alone but writes the address of an imported kernel VARIABLE into its record, and
+the generator's image dump is taken after that: it holds the addresses the generator's own process got (12 of the
+179 records in default.xex's `.rdata`: 8 in the 0x30...... heap, 4 at 0xFF......). Folding one bakes a run-time
+address into the build. sa2-nx's and banjo-nx's dumps hold the same values as each other (0xFFCAD000, 0xFFCAE000,
+0x30002000), so today they are probably right everywhere, but only as long as every build
+allocates the kernel's variables in the same order, and the PC self-check sees a wrong one only where a session
+executes that load. The tool now takes `--xex` and leaves any load that touches a record as a load (63 in
+default.xex, 15 in each core). sa2-nx's and banjo-nx's trees fold 86 and 77 such loads; told to banjo-nx, peggle2-nx
+(79, changed there) and sasrt-nx (not affected: its records lie outside the folded range).
+
+**GCC's early register allocation is off** (`-mearly-ra=none`, `FUTARI_SWITCH_EARLY_RA`; peggle2-nx's finding,
+banjo-nx ships it): devkitA64 GCC 16.1's pass dropped table lookups of the NEON vperm helper in Peggle 2's console
+build and overwrote a register. Futari 1.0.0 shows no sign of it (0 self-indexed lookups among 11,484), but the NEON
+vperm helper of round 1 is the trigger. `tools/check_switch_build.py` fails on a lookup indexed by one of its own
+table registers.
+
+**Run-time keys** (rows of the enhancement table): `futari_cpu_guest_cas_no_barrier` (off puts the `dmb` back without
+a build), `kernel_critsec_pcr_owner` (critical sections take the owner from the guest's PCR), `thread_signal_skip_idle`
+(Switch only: no notify for an event nobody waits on).
+
+**Self-checks of the PC build** (`app/src/native/futari_codegen_checks.cpp`; a game core is a DLL there and reports
+through the executable's exports): every folded constant is still loaded and compared, every promoted call compares
+the dispatch table's entry, every proven flush-mode check still tests, every critical section compares its owner
+with the looked-up thread. `futari_diag_rdata_check = <folder of the image dumps>` compares the whole `.rdata` of
+every loaded module with its dump, import records aside, with each 10 s report: folding assumes nothing writes
+there, also for the loads no session reaches. `futari_diag_indirect_census = <file>` writes the census of indirect
+calls per module and site. And at every start, on both platforms, `futari_forms_selfcheck.cpp` (sa2-nx's, banjo-nx's
+idea) runs the helpers that have an AArch64-only form (conversions, divisions, float copies, the vector helpers,
+vperm) on 248 edge inputs against plain C++ references: one `[verify] instruction forms self-check` line, and on a
+failure `futari_selfcheck_failed.txt` next to the program, because the release writes no log.
+
+**The lockstep capture and what it can show.** Board 1_0's window (game frames 1200 to 4200) is mostly menus and the
+ranking screens, whose layers (background, the scrolling panel, the blinking text) run at their own phases: two runs
+of ONE build differ there (250,781 pixels at the same label; the user: "that's just natural variation"). Free play
+is worse: the bullet patterns are random, two runs of one build share no frame at all. So a difference in such a
+stretch says nothing, and agreement only where the baselines agree among themselves.
+
+**The replay test (`tools/compare_replay.py`).** The one deterministic stretch of play is a replay: the user's slot 5
+(Ver 1.5, Xbox 360 mode, the reco_abnormal core) played back in lockstep. Its simulation is fixed by the replay's
+data, so every run draws the same game frames, but not necessarily all of them: the game's own frame skip follows
+the wall clock, and where one run draws frames 1, 3, 5 another draws 2, 4, 6. Runs of the optimised PC build hardly
+skip: three runs of the 1.0.0 reference share 99.9 % of their images. (The unoptimised build of the damaged cache,
+below, skipped about every other frame and shared about 70 %.) A build whose game logic differs would lose the
+replay's sync at its first difference and share nothing from there on. So the tool gives, per
+stretch of 300 recorded frames, the share of a test run's images that some reference run shows within two labels,
+next to the same share for a control run of the reference build. The reference is a true 1.0.0 executable, built
+from `git archive a86b620` in a folder of its own (`D:\mushihemesama\futari-nx-ref`; the third-party sources and the
+game files linked in as junctions: remove those with `rmdir`, never with a recursive delete).
+
+**The registers as C++ locals** (`non_volatile_as_local`, `non_argument_as_local`: phase B2, tried on 2026-10-07 and
+reverted after a boot crash). Both are on now. What had gone wrong then, read off sa2-nx's audit tools:
+- The scan of that day was linear and marked 72 functions of default.xex and 24 of each core `share_registers`.
+  `tools/read_before_write.py` (flow-sensitive) finds ONE real reader in default.xex: sub_8208D82C, the tail of a
+  function with a dynamic frame (`addi r12,r31,320`, then its `__finally` funclet). The rest are forms that do not
+  depend on the register (`xor rX,rX,rX`, `subfe rX,rX,rX`), which is all the cores have.
+- A normal function marked `share_registers` is harmful: the calls of `__savegprlr` / `__restgprlr` are elided by a
+  global gate, so it clobbers `ctx.r14-r31` and its callers copy the clobbered values back into their locals. The
+  three setjmp callers had been marked that way since 2026-10-06 ("harmless before the option"): two of them save
+  with the helpers. The marks are gone; after a longjmp (the image decoders' error path) the caller's register
+  locals are as sa2-nx leaves them, like the CR / XER / CTR locals since 1.0.0.
+- `tools/non_argument_audit.py`: arguments in r12 to the save/restore helpers (kept in ctx by name), to the EH
+  funclets (48 + 18 per core, marked by the generator from the EH tables) and to the stack probe sub_8215C0B4; one
+  value returned in r11 by a `__finally` funclet (the generated copy-back takes it). `non_argument_as_local_keep`:
+  the stack probe, the EH dispatch sub_82085190 (`mr r12,r4; blrl`), the continuation jumps (sub_8207C9F4, and one
+  per core at 880711C4 / 880711D4 / 880811C4) and sub_8219D024 (`addi r3,r11,384`, reached through a pointer).
+  With both options on: 0 missing hand-overs, 0 values returned without a copy-back, 0 localized registers read
+  before written, in all nine modules.
+- Nothing in the app reads or writes `ctx.r0/r2/r11/r12/f0` or `ctx.r14-r31`; the two mid-function hooks of the frame
+  wait take `r11` by reference (a local now). The localized copies are made from the new text.
+- What it changes that no audit sees: where the 360 stored its caller's registers in a new frame, the saves through
+  `__savegprlr` are gone and the inline ones store the function's own fresh locals (zeros). A guest function that
+  reads a stack word it never wrote sees something else than before (sa2-nx's tint came from removing the inline
+  stores as well, which is not done here). The replay test is the check for that.
+
+**Promoted indirect calls** (`app/indirect_promotions/<module>.txt`, `tools/make_promotions.py`). The census of the
+PC build (`futari_diag_indirect_census`) over the eight boards (one game core each: the top menu's Ver 1.5, Arrange,
+Black Label and Ver 1.01 entries with both panels load reco, palm, kiniro and hirow, normal and abnormal) and the
+slot 5 replay: about 185,000 indirect calls a second in play (SA2: 1.2 million), 89.7 % to the site's most frequent
+target. One site carries 45 % of default.xex's calls: the audio mixer's 8211F330 site 1, always to 821493E0.
+Promoted: 144 sites of default.xex (their guards catch 85.6 % of its calls) and 17 to 23 per core (78 to 87 %).
+
+**Results (PC, 2026-10-14, the final 1.0.1 code at -O2):**
+- Replay test against 1.0.0, game frames 4,800 to 13,802 (about 150 s of the slot 5 replay, reco_abnormal):
+  8,355 of 8,356, 8,683 of 8,684 and (verify mode) 8,975 of 8,976 frames found in the reference; the 1.0.0 control
+  run misses the same one frame. Rounds 1 to 3 alone (an unoptimised build, before the registers as locals and the
+  promotions): 1,914 of 1,915 and 2,012 of 2,012 over frames 4,800 to 7,801.
+- Verify mode over the replay: 0 differences. Promoted indirect calls 54.8 million (+13.5 million in the core),
+  folded constants 34.6 million (+8.9 million), flush-mode proofs 538 million (+12.3 million), critical section
+  owners 5.9 million, read-only data 31.8 million bytes compared, every localized copy and native.
+- The Black Label replay (slot 6, the kiniro_abnormal core) against 1.0.0, game frames 4,800 to 10,886: 5,888 of
+  6,000 frames found in the reference, the 1.0.0 control run 98.2 % (this replay's screens vary a little between
+  runs of one build), stretch by stretch within a point of the control: no divergence.
+- All eight boards (one game core each) in verify mode with the final code: 0 differences, about 11 MB of read-only
+  data compared per run, 0 different.
+- `tools\win\run_sdk_tests.ps1`: 0 failed. `tools/switch_compile_check.py`: the changed SDK and app sources and three
+  generated files compile with the Switch compiler; `tools/arm_forms_check.py`: all claims hold.
+
+**The Switch ELF** (build X, no profile: `out/switch_ab/X_1_0_1_nopgo`), against 1.0.0's (build W, with its profile):
+
+| In the recompiled game code | 1.0.0 | 1.0.1 |
+|---|---|---|
+| `msr fpcr` (flush-mode switches) | 5,084 in 1,177 functions | 2,362 in 1,022 |
+| frame pointer set-ups | 32,959 | 11 |
+| `fcvtas` (halves away from zero) | 26 in 14 functions | 0 |
+| table lookups (all of the ELF) | 11,484 | 5,705 (1,508 of them the two-register vperm) |
+| compare-and-swap | `ldxr`/`stlxr` + `dmb ish` | `ldaxr`/`stlxr`; the `dmb` only on the cold branch of `futari_cpu_guest_cas_no_barrier` |
+| NRO | 73.2 MB | 67.6 MB |
+
+`tools/check_switch_build.py`: all checks passed (start-up code at 0, Mesa 26.2.2, no vector FMA, 0 table lookups
+indexed by their own table register, 0 `fcvtas`). `tools/find_self_loops.py`: 0 self-branches in game code. The static
+`dmb` count is unchanged (429) because every compare-and-swap keeps its barrier behind that run-time key.
+
+### Input lag (2026-10-16, the user's question: "Can we improve input lag in the game? such as turning off vsync")
+
+**What the frame looks like** (the latency probe, `rex/frame_latency.h`: per frame the game's first controller read,
+its Swap, the present, and on the Switch the display's next vsync; a "[latency]" line every 10 s, and with
+`futari_diag_latency_trace_s` the order of every event of 8 frames). The slot 5 replay in real time on the PC, with
+the console's settings:
+
+    t =  0.00  guest vblank (the 60 Hz timer) -> the vblank callback bumps the game's frame counter
+         0.02  the game wakes and Swaps; the image is presented 0.3 ms later
+         0.05  the game reads the controllers (9 reads in 0.6 ms)
+         1.9   its frame is done (logic and draws); it sleeps on the frame counter
+        16.67  the next vblank: Swap of that frame
+
+The console has the same shape: its 10 s "frame wait" line says the game thread sleeps there 13 of every 16.7 ms.
+So the image swapped at a vblank shows controllers read a whole frame (16.4 ms) earlier, and the image then waits
+for the compositor's next refresh, at a phase that slides because the 60 Hz timer is not the display's clock.
+
+What is NOT a source: the controller driver samples the HID state when the game asks (padUpdate in GetDeviceState);
+the present does not wait on the CPU (the driver hands the compositor the GPU fence, and the compositor scans out our
+image directly); presentation already runs at swap interval 0 ("vsync off" in the producer's sense: the Switch has no
+tearing mode, the compositor always shows images at its 60 Hz refresh).
+
+**What changed** (each its own key, all on in the test build; `app/futari_switch.toml` lists them commented out):
+- `futari_late_input` (adaptive): the frame's first controller read after a Swap waits by what the frame can spare:
+  the time to the next vblank, less the longest frame of the last 64 (from that read to the game's wait), less
+  `futari_late_input_margin_us` (3 ms). A frame that needs more misses its vblank and shrinks the next delays.
+  (A first try delayed VdSwap's return instead: the game kicks the Swap packet after VdSwap, so the present moved by
+  the same amount and nothing was gained. The read is the right place: the Swap is already presented then.)
+  PC, slot 5 replay in real time: input -> present 16.7 ms -> 5.6 to 8.2 ms, the reads 9.4 to 9.9 ms later, 600
+  frames every 10 s as before.
+- `futari_vblank_display_sync` (Switch): the guest's vblank comes from the display's own vsync event
+  (`viGetDisplayVsyncEvent`) instead of the timer: no sliding phase, no frame shown twice or never when the two clocks
+  drift apart. Falls back to the timer if the event cannot be had; a guard drops vblanks closer than 8 ms.
+- `futari_vblank_phase_auto` (Switch): the guest vblank as late after the refresh as the image still makes the next
+  one. At each refresh the vblank thread checks the last output's fence (`TargetsNative::LastOutputDone`): 3 s of
+  images ready in time move the vblank 0.25 ms later (up to `futari_vblank_phase_max_us`, 9 ms); one that was not
+  moves it 2 ms earlier and caps it there for 5 minutes. A "[latency]" line gives the phase and the misses.
+- Sound: a sound reaches the speaker after the frames queued for audout (`audio_switch_frames_in_queue`, 10 = 53 ms)
+  and the three audout buffers (`audio_switch_frames_per_buffer`, new, 4 frames = 21.3 ms each): 80 to 115 ms. The
+  defaults stay (the crackle fixes were tuned with them); 2 and 4 would be about 53 ms.
+
+**Not done, and why:**
+- Double buffering: the NVK Switch WSI pins the swapchain at 3 images (`wsi_common_switch.c`: min = max = 3), and
+  libnx allows interval 0 only with 3 or more buffers, so it needs a Mesa patch (2 images, interval 1) and a driver
+  built apart from the shared one. With the game's vblank locked to the display, one image is made per refresh and
+  nothing queues behind it: a third buffer then adds no delay, and FIFO with two would only add waiting.
+- Sending the frame's GPU work before the Swap (the ring submits once per frame, at the Swap: the GPU starts the frame
+  then). An idle flush while the game sleeps could take most of the GPU time out of the Swap -> display path (a few
+  ms on the console), but every extra submission halves the frames of command slots in flight and meets deferred
+  recording: a renderer change with its own pixel and speed checks, after the console's numbers.
+
+### Banjo's codegen round (2026-10-19, the user: "Banjo has 25+ new codegen improvements ... port them all at once and then verify them")
+
+banjo-nx's `docs/codegen-enhancements.md` lists its generator options and 33 post-codegen steps (sasrt-nx's round of
+2026-10-14, banjo-nx's own of 2026-10-15 to 2026-10-19, its CPU codegen agent's "aggressive round"). Everything that
+applies to Futari is ported; four steps do not apply (below). All of it is build-time and exact by construction or
+checked by the PC build while it runs; every step has a CMake switch back (`FUTARI_GEN_*` in `app/CMakeLists.txt`).
+
+**The generator** (`sdk/src/codegen`, Banjo's hunks on top of sa2-nx 1.0.1's files; Futari's `function_scanner.cpp`
+and `project_recompiler.cpp` kept, Banjo's lack sa2-nx's jump-table bound and Futari's DLL handling). New options in
+`app/perf_overrides.toml`:
+- `rotate_word_shifts`: `rlwinm` / `rlwimi` with an immediate shift and a mask that does not wrap as the plain 32-bit
+  shift, extract or rotate (`lsl` / `lsr` / `ubfiz` / `ubfx`: one A57 instruction where the 64-bit rotate of the
+  duplicated word took two or three). `sdk/tests/rotate_word_test.cpp`: every shift and mask against the old form.
+- `fp_copy_forwarding`: with `fp_copy_pairs`, a single copied through a register (`lfs` ... `stfs`) stores the loaded
+  bits in either mode, also with other instructions between and through an `fneg` / `fabs` / `fnabs` of the
+  register in place (the sign bit flipped, cleared, set). default.xex: 1,815 copy-form stores.
+- `dcbt_prefetch` on, with banjo-nx's operand fix: `dcbt` decodes as {CT, RA, RB}, and the builder read RA as the base
+  and RB as nothing, so `dcbt r0,r5` prefetched r0's value. Now RA + RB (r0 as RA is 0). 130 in default.xex, 67 per
+  core. `FUTARI_GEN_DCBT_PREFETCH=OFF` compiles them to nothing.
+- Always on (corrections, no option): a setjmp site copies every register the function keeps in C++ locals into the
+  buffer and back after a longjmp (before, after the image decoders' longjmp the caller's register locals were as the
+  failed path left them); a conditional tail branch to a function that keeps r0/r11/r12 in ctx hands them over only
+  where the caller localizes them (it already did nothing otherwise); `HostToGuestFunction` inlined into its hook
+  without the compiler barrier that made the shim's values go back to memory.
+- Available, not used: `non_volatile_as_local_keep` / `_exclude` (registers or address ranges kept in ctx: banjo-nx's
+  VMX128 constants and WMV decoder; Futari's audits found nothing that needs them).
+- Census: every guest FPSCR write counts its rounding mode (`rex/sys_counters.h`, `kCensusRound*`; PC only), for the
+  `[census] FPSCR rounding mode` line of `futari_codegen_checks.cpp` (see `fp_sign_ops.py`).
+
+**Post-codegen steps** (`tools/post_codegen.py`, banjo-nx's order, per module; the steps that analyse the whole
+program run on each module separately). Counts for default.xex and one game core (`tools/codegen_round_census.py`
+prints all nine):
+
+| Step | What | default.xex | a core (reco_abnormal) |
+|---|---|---|---|
+| `loop_barriers.py` (narrow) | the barrier clobbers the guest window only, not all memory: ctx and the host stack keep their registers across it (marathon-nx's `PPC_LOOP_BARRIER`) | 3,473 barriers | 2,727 |
+| `frame_traffic.py` | marks prologue / epilogue statements only (its three elisions stay off, sa2-nx found them not exact); steps 13-14 read the marks | 1,821 mflr, 2,097 mtlr | |
+| `loop_locals.py`, `leaf_locals.py` | vector registers by value (`FUTARI_GEN_VECTOR_LOCALS_BY_VALUE`), the per-module opt-out list `app/locals_optout/<module>.txt` | 1,193 loops, 264 leaves | |
+| `vperm_one_source.py` | a vperm of one vector as a one-register lookup | 56 | 0 |
+| `fp_sign_ops.py` | fneg / fabs / fnabs as float operations | 171 | 5 |
+| `leaf_dead_stores.py` | a leaf's write-back of a register no caller can read is skipped (poison build `FUTARI_GEN_LEAF_DEAD_POISON`) | 491 in 70 functions | 617 |
+| `single_floats.py` | single-precision arithmetic in float where the inputs are proven singles | 3,300 of 4,189 | 37 |
+| `inline_memcalls.py` | memcpy / memset of a constant size up to 64 bytes inline | 206 of 830 calls | 125 |
+| `vec_unaligned_stores.py` | stvlx / stvrx as a few stores instead of byte loops | 464 | 310 |
+| `ro_constants_cfg.py` | the read-only constants `ro_constants.py` cannot see across a label (loop heads); each fold still loads and compares on the PC | 602 | 21 |
+| `dead_ctx_defs.py` | guest register writes nothing reads, left out (`--abi-indirect`; poison build `FUTARI_GEN_DEAD_DEFS_POISON`) | 895 in 535 functions | 810 |
+| `flush_hoist.py` | a loop header's flush-mode check in front of the loop (the PC build tests it like every flush proof) | 65 loops | 0 |
+| `lr_preserve.py --rewrite` | epilogue write-backs proven to store the value ctx.lr holds compile to nothing (the PC build compares every one) | 1,941 | 988 |
+| `r1_preserve.py`, `r1_local.py` | guest r1 as a local mirror where callees are proven to return it unchanged (the PC build compares after every assumed call) | 3,874 functions | 3,509 |
+| `vsel_neon.py` | VMX vsel as one NEON bit select | 13 | 3 |
+| `inline_leaves.py` | static inline copies of tiny leaves (12 guest instructions, no calls) in the files that call them | 711 calls | 107 |
+
+**What Futari needed that banjo-nx's tools did not have:**
+- *Nine programs.* The whole-program analysis of `leaf_dead_stores.py` (also used by `single_floats.py`,
+  `dead_ctx_defs.py`, `ro_constants_cfg.py`, `lr_preserve.py`, `r1_preserve.py`) decides "reached only by direct
+  calls" from the image's data words, `lis` pairs, the port's sources and one hard-coded entry point. A game core is a
+  DLL that default.xex reaches only through its export (`XexGetProcedureAddress`: the XEX's export table or the PE
+  export directory, both relative to the base, so the data-word scan cannot see them). `tools/futari_modules.py`
+  gives each module its entry point (`xstart`) and a core its export (one per core, e.g. `sub_88251D50`); the source
+  scan takes every `8xxxxxxx` (0x88 is the cores' base) in app/src, the SDK, the tomls and the promotion lists.
+- *The localized copies.* Their guard compares the WHOLE context with the original's, and the copies write back every
+  register they hold. A step that skips a context write in the original (`leaf_dead_stores`, `dead_ctx_defs`,
+  `inline_memcalls`, whose inline path leaves r4-r12 as they were) would make every comparison differ in a register
+  nothing reads. Those three leave the 14 functions of `hot_functions.txt` alone (`--exclude`); the value-identical
+  rewrites stay in. The copies are made after step 11, as in banjo-nx.
+- *memcpy and memset per module* (`tools/find_memcalls.py`): each module links its own LIBCMT; the two routines are
+  banjo-nx's instruction for instruction (memcpy 290 instructions, memset 40) in all nine. Their callers already go
+  through Futari's natives, which leave r4-r12 and the r1 - 8 slot untouched since 1.0.0: the inline path assumes
+  nothing new. `tools/memcalls_liveout.py` lists the guest instructions that read r0 / r4-r12 after such a call
+  anyway; the ones looked at are argument spills and `mr r8,r8` hints, so it is a pointer, not a proof.
+- *Hooks named in comments* (banjo-nx's fix, in `perf_codegen_post.py`): `#` comments of the tomls and CMakeLists.txt
+  no longer make a function "hooked": 132 addresses (the three setjmp callers among them) get direct calls.
+- `tools/post_codegen.py` runs the per-module steps three modules at a time (`FUTARI_POST_CODEGEN_JOBS`): about an hour
+  on the shared machine for all nine.
+
+**Not taken:**
+- `limiter_lazy_log10.py` (the XDK mastering limiter's log10 per sample): Futari has no XAudio (no XAudio string in
+  any module's image).
+- `switch_goto.py` (threaded dispatch for bytecode interpreters): none in Futari. The console profile's hottest guest
+  functions (the audio mixer 821493E0, 82153CB8, 8211F330, a core's 8813A120) have no jump-table switch; the one with
+  a 16-way switch (8808D320) dispatches once per call.
+- `hot_layout.py`: `FUTARI_SWITCH_HOT_ORDER` already puts the profile's 1,500 hottest functions (host code included)
+  first in `.text` with a section-ordering file, which also matches `.text.hot.*`.
+- `store_cards.py`: marks pages for banjo-nx's Renut renderer only.
+- The r1 proof leaves 835 functions of default.xex open (11 per core): an abort path calls `KeBugCheck`, which returns
+  in the SDK (it logs), so the guest comes back with r1 moved by the abort frame (-2,816) and the callers reload r1
+  after such calls, as the original code does. Marking `KeBugCheck` no-return would be exact on every path that
+  matters but not on that one; left as it is.
+
+**The choices** (`tools/codegen_choice.py`, banjo-nx's rule: measure every function both ways with the build's own
+compiler line, never guess): the loop / leaf locals opt-out list, and the functions where the lr write-backs and the
+r1 mirror compile cheaper (`app/codegen_choice/<module>_lr_write_same.json`, `<module>_r1_local.json`; without a list
+the step applies everywhere it can prove). Each generated file compiled four ways with the Switch build's compile line
+of its module, without LTO (default.xex's objects are LTO bytecode); per function locals_choice's loop-weighted cost.
+Measured for all nine modules (the user, 2026-10-19: "do the census for all cores, we shouldn't skip"):
+
+| Static loop-weighted cost | loop / leaf locals: on / off / chosen (opted out) | lr write-backs: on / off / chosen (functions) | r1 mirror: on / off / chosen (functions) |
+|---|---|---|---|
+| default.xex | 2,218,546 / 2,352,566 / 2,118,075 (24) | 293,275 / 303,034 / 291,883 (1,388) | 2,985,214 / 2,982,463 / 2,955,135 (1,185) |
+| palm_normal | 1,379,075 / 1,492,092 / 1,378,557 (4) | 131,585 / 136,718 / 130,867 (707) | 2,892,069 / 2,884,321 / 2,870,256 (850) |
+| palm_abnormal | 1,349,286 / 1,458,082 / 1,347,348 (13) | 130,901 / 135,748 / 130,031 (695) | 2,878,536 / 2,871,593 / 2,858,152 (836) |
+| reco_normal | 1,340,601 / 1,450,006 / 1,338,455 (14) | 130,253 / 135,176 / 129,426 (694) | 2,844,762 / 2,838,044 / 2,823,181 (860) |
+| reco_abnormal | 1,342,249 / 1,451,044 / 1,340,103 (14) | 130,239 / 135,082 / 129,359 (693) | 2,846,633 / 2,839,306 / 2,824,834 (852) |
+| hirow_normal | 1,320,044 / 1,428,882 / 1,318,148 (13) | 132,250 / 137,509 / 131,542 (699) | 2,823,587 / 2,815,081 / 2,802,647 (853) |
+| hirow_abnormal | 1,322,821 / 1,431,181 / 1,320,925 (13) | 132,298 / 137,556 / 131,590 (699) | 2,830,445 / 2,822,263 / 2,809,483 (857) |
+| kiniro_normal | 1,335,015 / 1,445,851 / 1,333,687 (9) | 130,232 / 135,274 / 129,477 (707) | 2,848,705 / 2,840,825 / 2,827,859 (838) |
+| kiniro_abnormal | 1,334,192 / 1,444,571 / 1,332,833 (9) | 130,267 / 135,271 / 129,486 (707) | 2,855,107 / 2,847,609 / 2,834,250 (836) |
+
+So the locals and the lr write-backs pay everywhere and the choice adds little, while the r1 mirror everywhere is a
+slight loss in every module (+0.09 % in default.xex, +0.24 to +0.30 % in the cores; banjo-nx's +0.33 %) and pays only
+chosen (-0.7 to -1.0 % against everywhere). Every module has its three lists in `app/codegen_choice/` and
+`app/locals_optout/`. The final codegen with all of them (`tools\codegen.ps1 -Force -Perf`, 2026-10-19 23:44) and the
+one replay (the user's slot 5, lockstep, 2026-10-20 03:40): 8,618 of 8,618 frames as the 1.0.0 reference.
+
+**A fault the round's first verify run found:** three of the localized audio mixer copies reported a memory
+DIFFERENCE. Not a codegen fault: the copies' record mode (`futari_native_hot_record.h`) logs every block that goes
+through `REX_RAW_ADDR`, and the guard compares each logged block after the copy's run with the same block after the
+original's. `dcbt_prefetch` (off until now) writes `REX_PREFETCH` through `REX_RAW_ADDR`, so every prefetched block
+counted as accessed, and the audio buffers another thread fills changed between the two runs. Record mode now
+prefetches the plain address; the eight boards in verify mode afterwards: 0 differences in every copy.
+
+**The build's own codegen step ran on every build** (found here; banjo-nx's `keep_unchanged_times` had the same
+fix): `keep_times` gave unchanged generated files their times of 10-14, older than today's generator and tomls, and
+the generator rewrites `futari_manifest.toml` (an input of its own step) with the same text on every run. The kept
+times are now never older than the step's newest input (each module's `codegen.d`, the generator binaries), and the
+manifest gets the time of the oldest output.
+
+**Results (PC, 2026-10-19, all steps everywhere they apply: no choice lists yet):**
+- `tools\win\run_sdk_tests.ps1` with banjo-nx's tests (rotate shifts, perm1, sign ops, memcalls, single floats,
+  unaligned stores): 14 tests, 0 failed.
+- Determinism: the build's own fresh codegen (its `rexgluerd.exe`) plus the steps gave every one of the 608 generated
+  files the same text as the script's run (sha1 compared).
+- Replay test against 1.0.0 (slot 5, reco_abnormal): 7,135 of 7,136 frames (the one frame the 1.0.0 control run
+  misses too), 8,907 of 8,907, 7,978 of 7,979, 8,556 of 8,556. In verify mode 8,827 of 8,827: r1 mirror 162.6 million
+  checks (+201.4 million in the core), link-register write-backs 38.4 million, folded constants 32.0 million (the
+  cfg folds included), flush-mode proofs 574 million, read-only data 31.8 million bytes, 0 differences apart from the
+  record-mode fault above.
+- All eight boards (one game core each) in verify mode after the fix: 0 differences (r1 mirror 31-106 million checks
+  per core, link-register write-backs 3.2-14.9 million, about 11 MB of read-only data each).
+- The Black Label replay (slot 6, kiniro_abnormal): 5,888 of 6,000 against one 1.0.0 run with the other at 98.2 %,
+  5,997 of 6,000 against both: 1.0.1's figures exactly.
+- `[census] FPSCR rounding mode`: the guest writes round-to-nearest only (6 writes in the replay), as
+  `fp_sign_ops.py` needs.
+- Not run: the poison builds (`FUTARI_GEN_LEAF_DEAD_POISON`, `FUTARI_GEN_DEAD_DEFS_POISON`): the user asked for one
+  replay per verification from here on. They are one reconfigure away (`-DFUTARI_GEN_..._POISON=ON`).
+
+### The deko3d renderer (2026-10-19 night, the user: "a fully functional deko 3d native renderer with no ring emulation or edram emulation base yourself on banjo")
+
+Renut's Direct3D-level renderer (github.com/masterspike52/reNut, by reNut and masterspike52; banjo-nx's copy and
+adaptation in `app/src/renut_engine/gpu`, reuse permitted by its author) as Futari's third renderer, chosen at boot:
+`futari_renderer = "renut"` (`"default"`: `futari_renderer_native` chooses the native PM4-ring renderer or the
+emulated Xenos as before). Futari's Direct3D calls run natively through plume (Vulkan on the PC, deko3d on the
+Switch): no PM4 ring, no EDRAM model, no register file rebuilt from packets. Built in by default
+(`-DFUTARI_RENUT_RENDERER=OFF` leaves it out; `app/cmake/futari_renut_gpu.cmake`). Route and parts: banjo-nx's
+`docs/deko3d-native-renderer-kit.md`.
+
+- **The device layout** (`tools/renut_futari_layout.py`): Futari's XDK (2.0.9328) has N&B's public `D3DDevice` below
+  0x2B00 and small insertions in the private part, so N&B's offsets shift by region (+0xAC / +0xB0 / +0xC8 / +0xCC /
+  +0xD0 / +0xD4; the tool's docstring has the functions that pinned each). The tool's first pass missed the state
+  constants of `d3d_native_state.cpp` (blend, colour write, Z, stencil, point, viewport, anisotropy, export state),
+  the two minus-one words of the title device, the tiling clear colour, the Swap's front-buffer argument and the
+  clear clamp's viewport in `render/draw.cpp`; each translated value was checked against Futari's own Direct3D code
+  (the translated offset is used there, N&B's is not) and fixed by hand.
+- **The hooks by name** (`tools/renut_futari_hooks.py`): Renut's hooks name N&B's addresses; its tool rewrites them
+  as `FUTARI_RENUT_HOOK(Name, fn)` and writes each name's site from `app/src/renut_engine/futari_d3d_functions.txt`
+  (70 of Renut's 354 hook names have a Futari function: `d3d_match` pairs scoring 0.9 or more with a clear second,
+  plus 25 checked by hand; the render and sampler state setters and getters are left to the game, whose own setters
+  keep the device as Renut reads it). Seven addresses are Futari's own hooks (BeginVertices, AllocateInlineData,
+  SetSurfaceClip, Clear, Resolve, KickOff, CBlocker_Check): they hand over first thing (`FUTARI_RENUT_YIELD`).
+  BeginIndexedVertices (no Renut hook; Futari draws through BeginVertices / DrawVerticesUP) runs Direct3D's own.
+- **The eight game cores**: each links its own Direct3D (on default.xex's device). The tool finds each core's copy of
+  each mapped function (equal instructions with branch targets ignored, else with immediates ignored; unique in the
+  core; its calls land on the core's copies of what default.xex's call): 45 of the 70 in every core, 38 hooked by
+  `futari_renut_core_hooks.cpp` (compiled into each core), the other 7 by Futari's own core hooks
+  (`FUTARI_RENUT_CORE_YIELD`). A core forwards to the executable's entry table (`FutariRenutEntries`, GetProcAddress
+  on the PC, the final link on the Switch). A core's XMemFree frees its headers from the core's own heap, so the
+  cores' `D3DResource_Destroy` / `_Release` free through the core's copy (`FutariRenutCallWithFree`).
+- **The vertical blank** (`futari_renut_vblank.cpp`): Futari's game logic counts vblanks (its callback
+  `sub_8216AD38`, set at device+16752, advances the frame counter at 0x82200560), through Direct3D's vblank handler
+  `sub_820A4C08`, which Direct3D's interrupt dispatcher calls after asking a GPU register. Renut has no GPU and the SDK
+  no vsync thread without its graphics system: a guest thread calls the handler itself at the display's rate (the
+  Switch's vi vsync with `futari_vblank_display_sync`), or once per Swap with `vblank_per_swap`.
+- **The SDK** counts the game's Swaps in one place (`rex::latency::SwapCount`, fed by VdSwap and by Renut's Swap):
+  `GuestSwapCount`, the lockstep vblank, the recorder and the late input follow either renderer.
+  `RexSwitchUnpinCurrentThread` came over from banjo-nx's SDK (the render thread's pin A/B).
+- **What is not Futari's**: N&B's widescreen hooks and photo capture are gone; `render/graphics_options.cpp` keeps
+  only the anisotropy floor (N&B's per-target scales and formats recognised its shadow maps and SSAO by size).
+- **Shaders**: Renut's XenosRecomp with banjo-nx's passes (early alpha), from `tools/renut_dump_shaders.py`'s dump
+  (out/renut_shader_dump: 42 containers, the cores' four the same in all eight); on the Switch, banjo-nx's deko3d
+  chain (`tools/renut_deko3d_shaders.sh`: SPIR-V dump, `deko3d_shaders.py`, `deko3d_glsl_opt.py` with its 21 passes
+  and the PC uam check, `deko3d_shader_package.py`, `renut_switch_shader_cache.py`): all 42 compile, no uam failure.
+  Early alpha (`tools/renut_early_alpha.py`) first took none of Futari's 24 pixel shaders ("unsupported: variable
+  g_PSC_F1_ColorRGB"): Futari's containers name their constants and samplers, which the translator keeps
+  (`#define g_PSC_F1_ColorRGB g_C(2)`, `smpColorMap_Texture2DDescriptorIndex` for banjo-nx's `s0_...`). With those
+  read as what they are: 13 copies (each self-checked against the original on random inputs), 11 "little".
+
+- **First light on the PC** (2026-10-20 01:03, plume Vulkan, `futari_renderer = "renut"`, `renut_gpu_backend =
+  "vulkan"`): the title screen, the menus and gameplay (inside the game-core DLLs) as the emulated GPU draws them,
+  60 game frames a second, about 37 draws a frame, the render thread 0.3 ms and the GPU 0.4-0.7 ms a frame. What it
+  took after the build: the game's `GetCurrentThreadId` is Futari's `sub_8208DA10` (banjo-nx's SDK names N&B's
+  `rex_GetCurrentThreadId`); Futari asks Direct3D for the AUTOMATIC FRONT BUFFER and passes `device->AutoFrontBuffer`
+  (+0x3ABC) to every Swap, which Renut did not make ("an automatic front buffer is not supported": presents without
+  an image, no captures): made as Futari's Direct3D makes it (`CreateTexture(width, height, 1, 1, 0, front format, 0,
+  D3DRTYPE_TEXTURE)`); on the PC the vblank thread runs above the game's threads and sleeps to 1.5 ms before each
+  vblank, then yields (Windows' whole-millisecond sleeps on a busy machine delivered the vblanks in bursts: 35-40 fps).
+  Comparisons: `scratchpad renut_lock_video.ps1` (lockstep, the board's pad in game frames, either renderer).
+- **The display gamma** (`banjo_renut_game_gamma`, on in Futari): Renut presented without the device's corrected
+  gamma ramp (+0x3B6C: Direct3D's display-gamma table over the game's or the default ramp), which the emulated GPU's
+  presenter applies from the display registers. Lockstep title frames, mean |difference| per channel against the
+  emulated GPU: 12.1 / 10.2 / 9.1 without it (Renut brighter: 112 / 160 / 172 against 99 / 150 / 164); 3.2 / 5.0 / 4.9
+  with the ramp fitted to one exponent (x^1.217, a little too dark); 0.8 / 0.8 / 1.0 with banjo-nx's exact form (taken
+  from banjo-nx at 03:00: the ramp as a 256 x 1 texture the present looks each channel up in; Futari's offset). What
+  is left is the video's compression.
+- **The DKSH cache** for the console (`tools/deko3d_variant_cache.py --list out/pc/pipeline_list.bin --glsl
+  out/deko3d_shaders/glsl_opt --out out/renut_switch/deko3d_shaders.bin`): Renut's pipeline list of the PC runs (96
+  pipelines: title, menus, a stage of board 0_0) gives 33 stage variants, compiled by the PC uam (the console's
+  patches), 35 KB next to the NRO; a variant missing there is compiled on the console and appended.
+
+- **The Switch build** (2026-10-20 02:02, `build_switch.ps1 -Pgo none`, renderer on): every check passes
+  (`check_switch_build.py`: `_start` at 0, the SDK's Mesa, no vector FMA / self-indexed table / fcvtas in the
+  recompiled code; `find_self_loops.py`: 0 in game code; `plume_vma_names.py --check`: no VMA symbol twice).
+- **Ryujinx** (`scratchpad emu_run.ps1`, its own data folder `ryu-data\futari`, cache id 0500000046555452): the
+  emulator starts an NRO without argv, so Futari did not know its folder (it wrote a default futari.toml at the SD's
+  root and found no game files): banjo-nx's SDK fixes taken as they are: `REX_SWITCH_FALLBACK_EXE`
+  (`/switch/futari-nx/futari.nro`, `filesystem_posix.cpp`), the guest memory's process pseudo-handle and eager views
+  without a loader (`guest_memory_switch.cpp`) and the loader-less heap (`runtime_switch.cpp`); a console with
+  hbloader takes none of these paths. Futari's own search also tries `/switch/futari-nx/game_root` (ROOTED: libstdc++
+  takes "sdmc:/..." as a relative path, and `exists()` on it throws). And any C++ exception kills Ryujinx: libgcc's
+  unwinder has `mrs x1, gcspr_el0` behind a `chkfeat` branch that hardware takes, but the emulator translates the
+  block and stops ("Unknown MRS 0xD53B2521"): an invalid futari.toml (toml++ throws) or an `sdmc:/` path is enough.
+  deko3d itself came up at the first try: "Renderer: deko3d on deko3d (Tegra X1, Maxwell GM20B)", the DKSH cache's
+  33 variants loaded.
+
+- **Coverage on the PC** (lockstep videos, `scratchpad renut_lock_video.ps1`): the title, the menus, and play in
+  reco, palm_abnormal, kiniro_normal, hirow_abnormal and Black Label (kiniro_abnormal, Maniac): no shader missing from
+  the cache, no draw dropped, no renderer warning. Every run used the same 96 pipelines.
+- **The staged build**: `out/switch_ab/AA_renut_deko3d` (NRO, DKSH cache, ELF and map; not published).
+- **Since then** (04:57 build): banjo-nx's stale texture-header fix (`banjo_renut_device_swizzle`: a header the game
+  built on the stack describes a later pass by render time; where its dwords 0, 3 or 5 differ from the device's fetch
+  constant, the device's is sampled; Futari never hit it on the PC); and on the console the vblank's phase after the
+  display's refresh found by measurement again (`futari_vblank_phase_auto`, the native renderer's algorithm, with
+  "finished at its refresh" from Renut's present fences, `Video::PresentDone`).
+- **Banjo's shader and render-thread optimisations in Futari** (2026-10-20 morning, the user: "use the shader
+  optimisations from banjo + render thread optimisations"). Shaders: Futari's chain runs all 27 of banjo-nx's text
+  passes (`tools/deko3d_glsl_opt.py` as banjo-nx has it at 02:10, `guardsel`, `deadcomp`, `bonesel`, `txq`, `earlyz`
+  and the rest), then uam with banjo-nx's flags (447: PRMT, GVN, uniform branches). `tools/deko3d_shader_stats.py`
+  over Futari's pipeline list, against the same GLSL without the passes: the small pixel shaders 41-49 -> 11-19
+  instructions, the heaviest (D28D) 307 -> 216, the vertex shaders median 154 -> 147. What does not fire, and why:
+  `txq` (no Futari shader asks a texture's size), the bool specialisations (no Futari shader has a bool constant),
+  `aw4` / `bonesel` and banjo-nx's newest uam flag 1024 (`banjo_deko3d_uam_wide_rows`, bone rows through the address
+  window: Futari's vertex shaders read their streams as vertex attributes, 0 draws through the window). Render
+  thread: every Renut key banjo-nx's shipping `renut.toml` sets has the same value in Futari, except
+  `banjo_late_input` (Futari's own `futari_late_input`), `banjo_renut_game_gamma` (on: the emulated GPU's look) and two
+  profiling diagnostics; the keys Futari lacks are banjo-nx's ring emulation and its game's CPU natives. In the
+  emulator's report: pushed constants on (every draw), the ring cleaner on its thread (956 ranges a 10 s, 0 on the
+  render thread), DKSH cache hits and 0 uam compiles, render thread 1.3-2.2 ms a frame. Not taken, with numbers: the
+  store cards (`banjo_renut_store_cards`, banjo-nx's proposal 1). They need banjo-nx's `tools/store_cards.py` in
+  Futari's codegen, a card store after every guest store outside the stack (the game thread, Futari's limit), to
+  save the render thread's texture hashes. Futari's (a counter for it, the "[renut] textures without store cards"
+  line): about 50 hashes a frame in gameplay, 1 KB each (tiled textures' sampled hash), and no dynamic re-uploads
+  (banjo-nx hashes about 150 MB a second, its 1920x1920 linear font cache). Futari has no vertex or index copies to
+  prove either (0 cached streams: its draws are Direct3D's BeginVertices, data the game writes fresh each frame and
+  Renut converts into the upload ring at the call). So about 0.1-0.15 ms of the render thread for a cost on every
+  frame of the game thread.
+- **Renut's keys under Futari's masters** (2026-10-20): its optimisations read their own cvars, and only a few went
+  through `EnhancementActive`, so `futari_cpu_enhancements` / `futari_noncpu_enhancements` = false left most on (the
+  same holds in banjo-nx for its masters). 52 of them are now rows of `src/futari_enhancements.cpp`'s table (CPU: the
+  render thread's work, its cores, NVK's; non-CPU: the GPU's, memory, input latency), so the masters and the
+  generated configs cover them; each row's ON value is its code default, so nothing changes with the masters on.
+  Not rows: Renut's fixes, its settings, and banjo-nx's game-specific ones (fur and light shader lists, fur shells,
+  its display thread, store cards).
+- **banjo-nx's latency trim and GPU-done probe** (2026-10-20 06:30, from its tree as it shared them):
+  `banjo_deko3d_latency_trim` (off, as banjo-nx's until a console measures it; not a table row, since the built-in
+  defaults would put it on; its check honours the non-CPU master): where the GPU is the limit, after a present the
+  render thread waits until the GPU has finished all but the frame's last kick list, so the next frame is recorded
+  and the game thread released just in time (a fence per kick submission; backs off for 60 frames if the GPU runs
+  dry). Nothing at a frame cap, which is where Futari runs. The probe (`rex::latency::NoteGpuDone`, Futari's SDK):
+  the `[latency]` line's "input -> GPU done", the earliest a frame can be shown; on the PC 0.1 ms under "input ->
+  present" (no GPU queueing). On the console it says whether Futari ever waits on the GPU. A list ends at a kick
+  only with 200 draws in it (`kKickSubmitDraws`, video.cpp): in the menus and the game over (about 70 draws a frame)
+  each frame is one list submitted at its present, and neither key acts; in play (250-650 draws a frame) they
+  do. Ryujinx with the trim on, play windows: 270-530 lists submitted at kicks and 1-3 of ~500 frames held back a
+  10 s (the emulator is not GPU-bound); the vblank thread "priority 0x2C, pinned to core 2"; 56-60 fps, no error.
+  (A first reading of the menu windows only said "0 at kicks": wrong for play.)
+- **Delta captures** (`futari_renut_delta_captures`, CPU, 2026-10-20 08:40; banjo-nx's render-thread proposal 15,
+  which it left for later): every queued draw copied the device's first 12,888 bytes (`kDeviceSnapshotSize`, 0x3258
+  in Futari's layout) on the game thread, 3-8 MB a frame at Futari's 250-650 draws, and the render thread read
+  them back from another core's writes. Now a capture keeps what Renut's recorded command-buffer ops already keep
+  (`guest/command_buffers.cpp`): nothing before the fetch constants (the draw paths read none of it), the fetch
+  constants and the tail as the 64-byte chunks that differ from the game thread's shadow of the previous draw
+  capture, the float constants as the groups `m_Pending[0]` / `[1]` mark written (read before Renut clears them).
+  The render thread applies them to its own copy in the queue's order and draws from that. Whole captures: the
+  first, after a capture taken but not queued, after a command-buffer op was recorded (it consumes the masks;
+  `RecordedOpCount`), and for clears and resolves (as before). On the A57's one load and one store pipe the compare
+  is ~7 KB of loads where the copy was 12.9 KB of loads and stores, and the render thread reads a copy in its own
+  cache. PC, board 0_0 in verify mode (`futari_cpu_verify`: each capture also carries the whole snapshot, the
+  render thread compares): 0 mismatches in 1,394,547 draws (150 s), 175-203 bytes a draw (1.4-1.6 % of the whole).
+  Then every core in verify mode (boards 0_0-3_1: reco, palm, kiniro and hirow, normal and abnormal, and the slot
+  5 replay): 16.7 million draws, 0 mismatches, no error.
+- **The caches survive HOME** (banjo-nx 06:50-07:00, from Peggle 2's report; taken at 07:15): the DKSH cache's
+  appends and the pipeline list are synced to the card (`fsync`; the list at most once a second, after the present),
+  where a flush alone left them in the file system service and a game closed with HOME lost them (the same pipelines
+  and variants built again at every start). The list's records are also loaded with the keys this configuration
+  makes (a record written with another key on would be built for no draw), and the first 64 run-time uam compiles
+  are logged with their constants (`tools/deko3d_variant_cache.py` names what a merge compiles). Futari keeps its
+  tag bnx3 and flags 447.
+- **sa2-nx's Renut CPU work** (2026-10-20 14:00, the user: "do all of sa2's new cpu improvements";
+  `D:\sonic adventure 2\sa2-nx\docs\renut-cpu-work-for-banjo.md`): taken through banjo-nx's port of it (its tree had it
+  by then, keys `banjo_renut_*`): the device snapshot deltas with the constants by the chain and the narrow compare
+  (items 1-3), the NEON line compare (4), the capture pool in batches (5), the hooks' fast paths (6), the render
+  thread woken every 16 draws (7), the next item prefetched (8), the done signal only with a waiter (9), one clock
+  read a batch (10), the chain's reuse (11), the pushed-constant fast path and the shared constants' inline compares
+  and skips (12-13), the smaller ones (14), and the Switch core layout (16, the SDK's `RexSetGuestThreadCoreLayout`,
+  `RexSwitchSetThreadMaskOf`, and every guest thread registering itself at start: the drawing thread alone on core
+  0, the other guest threads on cores 1-2 preferring 2; the log line says whether the drawing thread is the main
+  thread, which the layout assumes). Items 17-18 are store cards (none in Futari), 19 the driver-less build (done).
+  Futari's own delta captures (`futari_renut_delta_captures`) gave way to them. Futari's layout: the narrow compare's
+  unread private range (10880-11776) holds in Futari too (its fields there sit where N&B's do; its later private
+  fields are shifted further up, the vertex declaration at 11992), and the snapshot's 0x3258 bytes make 42 read
+  chunks (N&B 39). **Futari's addition, `futari_renut_deferred_chain`**: sa2-nx's chain left Begin*Vertices draws whole
+  (queued later than made), which are 88 % of Futari's draws (115,582 of 131,000 a window); they are now deltas of
+  the chain too, made under its lock and queued by `FlushDeferredVertices` under it (every hook flushes its device's
+  deferred draw before making another). PC, board 0_0 lockstep, `banjo_renut_snapshot_deltas_verify` and
+  `banjo_renut_chain_reuse_verify` on: every draw a delta (0 Begin*Vertices draws whole), 225-291 bytes a draw (12,888
+  whole), every draw verified (127,296-167,473 a window), 0 differ, no reuse difference, 60 fps. banjo-nx, peggle2-nx
+  and sa2-nx took it the same day (banjo-nx: ~90k delta draws checked, 0 differ; Peggle: 13,088 -> ~540 bytes a draw).
+  After the 14:32 NRO: banjo-nx's fix of a race in the chain's pipeline reuse (the prebuild epoch read before the
+  lookup, not after: a specialised pipeline finished in between left the next draw on the generic one; the same
+  pixels), in the source for the next build. And (banjo-nx's finding, 15:00) a guard for more than one D3D device: the
+  chain is one for all devices, and a deferred delta is made at Begin but queued at its device's next hook, so a draw
+  on another device in between would rebase the chain under it (N&B has two devices: banjo-nx saw hangs and turned
+  its copy off). Futari has one (one "D3D device (type 1)" in every run, all eight cores), so the 14:32 NRO is safe;
+  still: the chain counts its captures (`DeltaChain::made`), a deferred delta records the count, a flush that finds
+  the chain moved queues the whole device instead, and after the first device switch Begin*Vertices draws are whole
+  copies (`multi_device`, logged once). PC verify after it: 223-245 bytes a draw, 0 differ, no warning.
+- **banjo-nx's input-latency set and a 2-image swapchain** (2026-10-20 13:00, relayed by banjo-nx as the user's
+  request: "take all of Banjo's input-latency changes, ON by default, and develop a double-buffer option, ON"):
+  - taken, on: `banjo_deko3d_eager_kicks` (lists of 100 draws instead of 200, up to 6 a frame, each submitted at its
+    own kick; Futari's 250-650 draws a frame make 2-6), `banjo_late_input_gpu` (the read later by the GPU queue's
+    slack, `banjo_late_input_gpu_margin_us` 6000; part of banjo_late_input's delay, so it acts with that one, below;
+    REMOVED at 17:30, the user's call through banjo-nx: on banjo-nx's console it found false slack where the GPU just
+    holds 30 fps, 29.7-30 -> 24.3 fps for 1-11 ms less lag; in Futari it never acted, Futari's own late input being the
+    one installed),
+    and banjo-nx's other changes in the same files (2D-array views of
+    layered images, from SASRT; the run-time variant log); `banjo_deko3d_latency_trim` stays off (it starved the GPU
+    with eager kicks on banjo-nx's console).
+  - `banjo_late_input` is on but acts only with `futari_late_input` off: on the PC it delayed the read 0.0 ms in
+    Futari ("delayed 0.0 ms on average", input -> swap 16.7 ms), its slack being the render thread's wait in the Swap,
+    which Futari's game thread, waiting on its own vblank, never makes; Futari's own gave ~6 ms input -> swap in the
+    same scenes (07:05 runs). One read delay at a time (both install through `rex::input::SetFrameReadDelayFunction`).
+  - banjo-nx's display sync (`banjo_display_sync`) paces a frame limiter Futari does not have (the game paces itself
+    on its vblanks); Futari's equivalent, the display-synced vblank with its measured phase (`futari_vblank_display_sync`,
+    `futari_vblank_phase_auto`), is on, and works on a console since the default window fix below.
+  - `futari_renut_double_buffer` (on, `futari_renut_shim.cpp`, `backend/video.cpp`): the swapchain with 2 images
+    instead of 3 (the frames in flight + 1). The acquire is a queue wait on deko3d (`dkQueueAcquireImage`): the GPU's
+    next frame waits for the display to give the image before back, one image less queued before the display; a frame
+    that misses a refresh costs a whole refresh there. PC: "Swapchain: 2 images", 59-60 fps. The console's numbers
+    (the `[latency]` line's "input -> GPU done" and the frame rate in heavy scenes, against `futari_renut_double_buffer
+    = false`) decide whether it stays on.
+- **No Vulkan driver in the Switch build** (the user, 2026-10-20 11:40: "remove the vulkan driver from the switch
+  builds"): `FUTARI_SWITCH_NVK` (app/CMakeLists.txt, default OFF) sets the SDK's `REXGLUE_SWITCH_LINK_NVK` and plume's
+  `PLUME_SWITCH_LINK_NVK`, which leave Mesa's `libvulkan.a` out of the link (the SDK's `rex::nvk` and plume's driver
+  group). The code that still referenced it, the linker's list: `vkGetInstanceProcAddr` and `vkDestroyInstance` (the
+  SDK's Vulkan code), `vk_icdGetInstanceProcAddr` and `vk_icdNegotiateLoaderICDInterfaceVersion` (plume's Vulkan
+  back end), and `posix_memalign`, which Mesa's archive had supplied to libavutil. `sdk/src/ui/switch_vulkan_stub.c`
+  answers them as a system without a driver (`vkCreateInstance` -> `VK_ERROR_INCOMPATIBLE_DRIVER`, no extensions or
+  layers, every other function unknown; `posix_memalign` on newlib's `memalign`). NRO 70.4 -> 56.0 MB (Mesa was 21.6
+  MB of code and data). Only Renut on deko3d draws now: the native renderer and Renut on NVK need `-DFUTARI_SWITCH_NVK=ON`.
+  `tools/check_switch_build.py` reads the option from the build's cache and then expects no Mesa string. Ryujinx:
+  "Renderer: deko3d on deko3d", the vblank on the display's refresh, no error. (peggle2-nx did the same at the same
+  time and found the same five symbols.)
+- **The display's vsync event on the console** (banjo-nx's console logs, 2026-10-20 11:20): a second
+  `viOpenDefaultDisplay` FAILS on the console while libnx's default window (`nwindowGetDefault`, which the deko3d
+  swapchain and Mesa's WSI use) holds "Default" open; Ryujinx answered it, which hid it. So on a console both of
+  Futari's vblank threads (Renut's and the native renderer's, `futari_vblank_display_sync`) fell back to the 60 Hz
+  timer, and `futari_vblank_phase_auto` never ran (1.0.1's NRO too; Futari's only console logs, 2026-10-07, are
+  older than the key). banjo-nx's fix taken (`renut_engine/display_sync.cpp`): `__nx_win_init`, `__nx_win_exit` and
+  `nwindowGetDefault` defined there (all three, so libnx's default_window.o stays out of the link; libnx's init.o
+  calls the two through weak references), libnx's own calls in its order, and the window's `ViDisplay` kept;
+  `banjo::display_sync::DefaultWindowDisplay()` (Futari's) gives it to both vblank threads, which open a display of
+  their own only without it. In the shared Ryujinx (banjo-nx's Ryujinx.HLE.dll of 11:23) the vi vsync event now
+  comes on a 60 Hz grid, as the console's, not after each composition.
+- **The vblank thread on the console** (`futari_renut_vblank_core`, 2026-10-20): banjo-nx's display thread's
+  placement (priority 0x2C, the render thread's; pinned to the background core 2) for Futari's vblank thread
+  (display-synced or on its timer), which was created at the game threads' priority on no core of its own (Horizon
+  does not slice between threads of one priority: a vblank could wait behind a busy game thread). -1 = as before.
+- **The game thread with Renut against the native renderer** (PC, `scratchpad ab_gamethread.ps1`: board 0_0 in real
+  time, renderers alternated): not measurable on this PC. Two runs of Renut differed 2x in the game thread's sleep
+  (5.9 against 3.0 s in 10 s), more than the renderers did, and "input -> swap" moves with the adaptive late input.
+  The console's profile config (`futari_profile.toml`, now with Renut's `renut_gpu_profile = 10`) is the measurement.
+- **The picture after the morning's changes** (PC, 09:20 build, delta captures on): the title's 8 frames (lockstep,
+  from frame 600, full size) pixel for pixel those of 04:46 (0.00 / 0.00 / 0.00), 0.82 / 0.84 / 1.01 levels from
+  the emulated GPU as before.
+- **Both masters off with Renut** (PC, 09:22, board 0_0 lockstep): "0 of 165 active", 57-60 fps in play, the picture
+  as with them on (5.6 levels, the runs' spread); one "[error] BaseHeap::Release failed because address is not a
+  region start" from the game's loading thread at the stage load (`futari_355.log`). Not again in four more runs
+  (each master alone, both twice); never in the native renderer's masters-off runs of 2026-10-08. Intermittent:
+  if it comes back, the D3D resource frees through the cores' XMemFree (resource.cpp) with the CPU keys off first.
+- **One stall, not reproduced** (PC, 09:15, `futari_349.log`, lockstep title capture with
+  `futari_renut_delta_captures = false`): after the first 10 s report no thread logged again (the audio threads'
+  lines stop too) and the video never finished. The same command again, and three more runs with the key on: normal.
+  Not the pipeline list's new `_commit` (no record was appended at the title). If it comes back: the log writer and
+  the shared D: disk first.
+- **Renut keeps the game's logic** (PC, 2026-10-20 08:00): the slot 5 replay (reco_abnormal), lockstep, frames
+  15,600-16,800 (the replay's last stretch, where a divergence would have grown) with Renut and with the emulated
+  GPU: the same play and the same counters (x1704, x1873, x2002, x2499, x2728, x2785, x2887 in both), the frames'
+  means equal, the last ones 1.1-1.6 levels apart (the renderers' tone); the frames 10-14 levels apart are a frame
+  of the game's own wall-clock frame skip off (2618 against 2616). A desynced replay is 40+ levels off throughout.
+  (`compare_replay.py` cannot judge it: its references are image hashes of the emulated GPU.)
+- **Lockstep is slower with Renut on heavy frames** (not in play): that replay ran 47-53 fps in lockstep
+  (`vblank_per_swap`) with Renut, 60 with the emulated GPU, and 58-60 fps with Renut in real time at up to 650
+  draws a frame. Lockstep ties each vblank to a Swap, and with Renut the game thread is released by the render
+  thread's present (vsync on), the likely cost (not measured further: it is the test mode only). Runs of Renut in
+  lockstep need ~20 % more seconds to reach a frame. (The 37 fps reco_abnormal run of 01:06 predates the
+  PC vblank fix.)
+- **A second game in one session** (PC, `scratchpad padb_swap.txt`: board 0_0's game to its game over, "no" to the
+  replay, the ranking, the title, the menus, a second game): the renderer goes through all of it without a warning.
+  The second game was the same core each time (reco_normal); a second core in one session is still untried: after a
+  game over the ranking and title screens do not run in lockstep (the same presses met other screens in two runs),
+  so the presses to the other shot type miss. The replay menu would do it (slot 5's replay, then slot 6's Black
+  Label one), but slot 5's replay is still in play at frame 18,700 (lockstep, past 5 minutes of play): a long run,
+  not tried. The short way, found by discovery runs but not run to the end (the user called verification done):
+  in play Start opens RESUME / RESTART / OPTION / RETURN TO TITLE (three downs, A, A for yes) -> the Score Attack
+  menu; six downs to RETURN TO TOP MENU, A, A for yes -> TOP MENU (Ver1.5 / Arrange / Black Label / Ver1.01: the
+  boards' first digit; the second, "right" on the next screen, is normal / abnormal; the shot type picks no core).
+  `scratchpad padb_pause.txt` / `padb_swap_top.txt` (board 1_0's presses from its top-menu "down" on).
+- **Open**: a console run (only Ryujinx so far, where the display's vsync event is not used, so the measured phase is
+  untried); Renut on NVK (`renut_gpu_backend = "vulkan"`) on the Switch is untried; the PC keeps the emulated GPU as
+  its default. **For a release**: this NRO embeds Futari's translated shaders (`out/renut_switch`: the SPIR-V cache
+  and the deko3d GLSL package) and its DKSH cache is game data too, where 1.0.x's NRO carried none (the installer
+  builds the shader library from the player's copy). Before publishing, the installer would have to make these from
+  the player's copy (Renut's XenosRecomp, SPIRV-Cross, the GLSL passes and uam) and the NRO read them from the SD
+  card; nothing here is published. A way found by peggle2-nx (2026-10-20, its installer): the installer's
+  dxc_web.wasm builds Renut's deko3d SPIR-V as it is, with "#define BANJO_DEKO3D 1" and "#define RENUT_RECOMP 1"
+  put before the translator's HLSL and, after SPIRV-Cross, the forced y flip of gl_Position undone (Peggle's GLSL
+  after deko3d_glsl.py and deko3d_glsl_opt.py was then byte for byte the native chain's); SPIRV-Cross builds to wasm
+  with em++; Renut's translator needs a front end without DXC (peggle2-nx's tools/renut_hlsl_frontend.cpp and
+  renut_hlsl_pch.h). uam for the DKSH cache would be the remaining piece (or the console compiles the variants once
+  and appends them).
+
+### PGO of the final Renut build (2026-10-20 evening, the user: "we are ready for final build so please give me pgo instrumentation nro with all logging off")
+
+- **The instrumented NRO**: `build_switch.ps1 -Pgo generate -BuildDir out\switch_pgo` from this code (AD plus the
+  GPU-queue late input's removal), staged as out/switch_ab/AE_renut_pgo_generate with the player's futari.toml and
+  the DKSH cache. Checks: check_switch_build.py passed, find_self_loops.py 0 in game code, plume_vma_names.py 0.
+- **Logging off**: the built-in settings already had every log and profiler off; `renut_memory_report = 0` (Renut's
+  30 s memory report: the log level skipped its line, not its queries) joined that list and the verify configs'
+  profiler-off block (tools/make_enhancement_configs.py). The session must run the player's futari.toml: a test
+  config turns logging and the sampler on, which the release does not run.
+- **Build note**: this shell's DEVKITPRO was MSYS's `/opt/devkitpro`, so the first configure stopped at "libnx linker
+  specs not found"; set `$env:DEVKITPRO = 'C:/devkitPro'` before build_switch.ps1 (a failed configure leaves a
+  CMakeCache.txt that stops the next one from configuring: remove that folder).
+- **Next**: the user's session -> sdmc:/switch/futari-nx/pgo/*.stream; pgo\*.gcda (1.0.0's) moved aside,
+  tools\win\pgo_merge.ps1, `build_switch.ps1 -Pgo use` in out\switch. No code change in between (settings in a
+  toml, such as futari_renut_double_buffer, can still change: they are not code).
+
+### The release's shaders beside the NRO (2026-10-20 night, the user: "look what peggle did for deko3d shaders on the web installer do the same")
+
+- **NRO**: peggle2-nx's design. `FUTARI_RENUT_RELEASE_SHADERS` (app/cmake/futari_renut_gpu.cmake, on by default) builds
+  with tools/renut_release_shaders.py's files (out/renut_switch_release): no GLSL package in the NRO (Futari has no
+  shader of its own among the game's, unlike Peggle 2's Bink trio) and the shader table without SPIR-V (deko3d reads
+  none). banjo_renut_deko3d.cpp is peggle2-nx's loader: `deko3d_glsl.bin` beside the NRO first, then a built-in
+  package; a package without a dictionary (the installer's raw zstd frames) is read too; MissingGameShaders() is
+  logged at the renderer's choice (banjo_renut_select.cpp). The ELF has no `.rodata.banjo_deko3d_glsl` /
+  `banjo_renut_spirv` section; g_compressedSpirvCache is one zero byte.
+- **Installer** (futari-nx-installer lib/deko3d.js, peggle2-nx-installer's): the 42 distinct containers stored in the
+  nine images (lib/shaders.js imageContainers) -> wasm/renut_hlsl (Renut's translator, tools/renut_hlsl_frontend.cpp,
+  peggle2-nx's: its HLSL is XenosRecomp's BANJO_HLSL_DUMP_ONLY text without the first "// pixel shader hash=" comment,
+  checked on all 24 pixel shaders) -> lib/early_alpha.js (tools/renut_early_alpha.py + tools/early_alpha.py in
+  JavaScript, Futari's own step: 13 of the 24 pixel shaders get a copy) -> DXC (the page's, with the #define preamble;
+  the vertex shaders' y flip undone) -> SPIRV-Cross -> lib/deko3d_glsl.js (deko3d_glsl.py + deko3d_glsl_opt.py:
+  Futari's copies are byte for byte peggle2-nx's) -> lib/deko3d_package.js. The translator, the GLSL tools and the
+  shader_common.h are the same files in both ports, so peggle2-nx-installer's wasm builds serve as they are.
+  Against the native chain (out/deko3d_shaders/glsl_opt): 40 of 42 byte for byte; ps_602DCD1805371872 and
+  ps_B890268C9A9044DA differ where the page's DXC (v2025.1) numbers SPIR-V's values (SPIRV-Cross's _53 -> _54 ...),
+  and ps_B890 builds one texture coordinate as vec2(t.x, t.y) instead of vec2(t.xy): the same shaders. The release
+  is tested with the page's package (Ryujinx 2026-10-20 night: 42 shaders read beside the NRO, 24 uam compiles, 0
+  failed, 20 saved to the DKSH cache; then the emulator's known double-buffer slowdown after ~90 s, as with AB/AC).
+  The manifest's 1.0.1 entry: "shader_library": false (no 1.0.0 library: the NRO links no Vulkan driver) and
+  "deko3d": { cores, shaders, containers_sha256, package_sha256 }.
+- **PGO**: Renut's code (futari_renut_gpu) is not an instrumented target (only futari_recomp and futari are), so the
+  loader change costs the profile nothing.
+
+### Candidates after 1.0.1 (banjo-nx's relay of 2026-10-14; not in 1.0.1, which is the CPU rounds only)
+
+- **A native deko3d renderer** (the user: Futari "will switch to eventually"; banjo-nx's offer of 2026-10-19). Its
+  kit: `D:\Banjo kazooie port\banjo-nx\docs\deko3d-native-renderer-kit.md` (after `docs\rexglue-api-renderer-guide.md`):
+  Renut's Direct3D-level renderer (about 125 hooks, `reNut\config\renut_gpu_funcs.toml`, bodies in banjo-nx
+  `app\src\renut_engine\gpu\d3d\hooks`) on plume's deko3d back end, Renut's XenosRecomp shader ABI, a DKSH cache built
+  on the PC. Futari specifics from banjo-nx: the hook set generated for each of the nine Direct3D copies, all
+  dispatching to one renderer; check whether each core creates its own device (Renut's CreateDevice hook initialises
+  once) and release a core's resources at unload; the remaining PM4 (kick, fences, Swap, lock flush, the inline-data
+  allocator) is what those hooks take over; take Renut's shader translator with the renderer (55 shaders); the
+  display-locked vblank and `phase_auto` carry over (banjo-nx's `display_sync.cpp` is the same idea for 2+ refreshes).
+  Credit reNut and masterspike52 (the user reports reNut's author permits reuse in the user's ports).
+
+- `banjo_gpu_edram4_split_tiles`: a Clear or draw with one proven rectangle that covers part of a tile another view
+  owns takes the tile without a transfer (split ownership, healed only when needed). Banjo: EDRAM tiles moved per
+  frame 176 -> 31, exact. Applies where surfaces are not whole tiles wide/high (Banjo: 1024 in pitch 1040). Futari's
+  main targets are 1280x720 (16 x 45 tiles): count Futari's edge-tile transfers first.
+- `banjo_gpu_proof_depth_only`: in EDRAM mode 5 (depth only) the alpha-test / alpha-to-coverage bits must not reject
+  the full-overwrite proof (no pixel shader runs). Banjo's loading screens: 16 ms GPU per Swap on the console.
+- banjo-nx's relay of 2026-10-16 (its docs/codegen-enhancements.md steps 23-29, tools in banjo-nx/tools): the XDK
+  mastering limiter computing log10 per sample but using it only on its rare pow path (`limiter_lazy_log10.py`,
+  about -5 % of Banjo's guest time; look for a log10 + pow function in Futari's audio code first); r1 as a local
+  mirror per function (`r1_preserve.py`, `r1_local.py`, -0.41 %); proven redundant epilogue LR write-backs
+  (`lr_preserve.py --rewrite`, -0.18 %); flush checks hoisted in front of call-free loops (`flush_hoist.py`);
+  threaded dispatch for bytecode interpreters (`switch_goto.py --thread`); and a ring "prover" that fingerprints
+  guest memory on another core as soon as the game submits (`banjo_ring_prover.h`).
+- Deferred recording (on in Futari since 1.0.0): slightly worse on Banjo's console, where only about 18 % of the
+  render thread is driver calls. Futari's console number for the key alone was never taken; an in-run A/B on the
+  console would say whether it pays here.
 
 ### Next steps (left for the next session, 2026-10-07 morning)
 

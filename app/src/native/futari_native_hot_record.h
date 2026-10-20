@@ -52,3 +52,8 @@
 #define REX_STORE_D_U16(r, d, y) (*(u16*)::futari::hot::Touch(FUTARI_HOT_AT_D(r, d), 2) = __builtin_bswap16(y))
 #define REX_STORE_D_U32(r, d, y) (*(u32*)::futari::hot::Touch(FUTARI_HOT_AT_D(r, d), 4) = __builtin_bswap32(y))
 #define REX_STORE_D_U64(r, d, y) (*(u64*)::futari::hot::Touch(FUTARI_HOT_AT_D(r, d), 8) = __builtin_bswap64(y))
+// The guest's dcbt / dcbtst hints (dcbt_prefetch, 2026-10-19): a prefetch reads and writes nothing, so it must not log
+// a block. Through REX_RAW_ADDR it did: the block then counted as accessed, another thread (the audio buffers'
+// producer) changed it between the copy's run and the original's, and the guard reported a difference that was none.
+#undef REX_PREFETCH
+#define REX_PREFETCH(x, write) __builtin_prefetch((const void*)FUTARI_HOT_AT(x), (write))

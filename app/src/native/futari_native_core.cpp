@@ -4,8 +4,16 @@
 // symbols are local).
 
 #include "futari_native.h"
+
+#include <atomic>
 #include "../me/me_native_system.h"
 #include "../me/futari_api.h"
+// Renut's renderer (src/renut_engine/futari_renut_core.h): the core's own hooks of a function it replaces hand over.
+#if FUTARI_RENUT_RENDERER
+#include "../renut_engine/futari_renut_core.h"
+#else
+#define FUTARI_RENUT_CORE_YIELD(name)
+#endif
 
 #if defined(_WIN32)
 #ifndef WIN32_LEAN_AND_MEAN
@@ -48,6 +56,38 @@ extern "C" __attribute__((visibility("default"))) void FutariCensusSegment(const
 extern "C" __attribute__((visibility("default"))) void FutariCensusNoteDraw(const uint8_t* base, uint32_t device);
 #endif
 
+#if !defined(__SWITCH__)
+// The PC forms of the post-codegen steps count themselves and report a failed assumption (tools/flush_mode_flow.py,
+// tools/ro_constants.py, tools/indirect_calls.py; the executable's side is futari_codegen_checks.cpp). A core is a
+// DLL there: its own counters, and the reports go to the executable (CoreCodegen* below, once the core's name is
+// known).
+namespace futari::native {
+void ReportVerify(const char* what, uint64_t checks, uint64_t differences);
+}
+extern "C" {
+volatile unsigned long long g_rex_flush_flow_checked = 0;
+volatile unsigned long long g_rex_ro_checked = 0;
+volatile unsigned long long g_rex_promoted_calls = 0;
+volatile unsigned long long g_rex_r1_checked = 0;        // banjo-nx's round: tools/r1_local.py (REX_R1_CHECK)
+volatile unsigned long long g_rex_lr_write_checked = 0;  // and tools/lr_preserve.py (REX_LR_WRITE_SAME_CHECK)
+// On until the first tagged call has asked the executable (the DLL may be loaded before the config is read).
+unsigned char g_rex_indirect_census = 1;
+void RexFlushFlowMismatch(int) noexcept { futari::native::ReportVerify("flush-mode flow (core)", 0, 1); }
+}
+#if !defined(_WIN32)
+extern "C" __attribute__((visibility("default"))) bool FutariIndirectCensusOn();
+extern "C" __attribute__((visibility("default"))) void FutariCoreIndirectCensus(const char* module, unsigned function,
+                                                                                unsigned site, unsigned target);
+extern "C" __attribute__((visibility("default"))) void FutariCoreRoMismatch(const char* module, unsigned address);
+extern "C" __attribute__((visibility("default"))) void FutariCorePromotedMismatch(const char* module, unsigned target);
+extern "C" __attribute__((visibility("default"))) void FutariCoreR1Mismatch(const char* module, unsigned long long expected,
+                                                                            unsigned long long got);
+extern "C" __attribute__((visibility("default"))) void FutariCoreLrWriteMismatch(const char* module,
+                                                                                 unsigned long long held,
+                                                                                 unsigned long long written);
+#endif
+#endif
+
 namespace futari::native {
 
 #if defined(_WIN32)
@@ -62,6 +102,23 @@ void ReportVerify(const char* what, uint64_t checks, uint64_t differences) {
   static const auto report = FromExecutable<void (*)(const char*, uint64_t, uint64_t)>("FutariNativeVerifyReport");
   if (report) {
     report(what, checks, differences);
+    // The core's own counts of the generated code's self-checks ride along (a core has no periodic report of its
+    // own): every 1024th report, so a verify session shows them.
+    static std::atomic<uint32_t> calls{0};
+    if ((calls.fetch_add(1, std::memory_order_relaxed) & 1023) == 0) {
+      static std::atomic<unsigned long long> flow{0}, ro{0}, promoted{0}, r1{0}, lr{0};
+      const unsigned long long now_flow = g_rex_flush_flow_checked, now_ro = g_rex_ro_checked,
+                               now_promoted = g_rex_promoted_calls, now_r1 = g_rex_r1_checked,
+                               now_lr = g_rex_lr_write_checked;
+      const unsigned long long was_flow = flow.exchange(now_flow), was_ro = ro.exchange(now_ro),
+                               was_promoted = promoted.exchange(now_promoted), was_r1 = r1.exchange(now_r1),
+                               was_lr = lr.exchange(now_lr);
+      if (now_flow > was_flow) report("flush-mode flow (core)", now_flow - was_flow, 0);
+      if (now_ro > was_ro) report("read-only constants (core)", now_ro - was_ro, 0);
+      if (now_promoted > was_promoted) report("promoted indirect calls (core)", now_promoted - was_promoted, 0);
+      if (now_r1 > was_r1) report("r1 mirror (core)", now_r1 - was_r1, 0);
+      if (now_lr > was_lr) report("link-register write-backs (core)", now_lr - was_lr, 0);
+    }
   }
 }
 
@@ -241,6 +298,67 @@ void ReportDecided(const char* what, uint32_t address, int mode, uint64_t found_
 #endif
 
 // memcpy (futari_native_crt.h): default.xex 8207DAC0, the cores below.
+#if !defined(__SWITCH__)
+// The generated code's self-checks of this core (see the top of the file): to the executable, under the core's name.
+extern "C" {
+void RexRoMismatch(unsigned address) noexcept {
+#if defined(_WIN32)
+  static const auto report = reinterpret_cast<void (*)(const char*, unsigned)>(
+      reinterpret_cast<void*>(GetProcAddress(GetModuleHandleW(nullptr), "FutariCoreRoMismatch")));
+  if (report) report(FUTARI_CORE_NAME, address);
+#else
+  FutariCoreRoMismatch(FUTARI_CORE_NAME, address);
+#endif
+}
+void RexPromotedMismatch(unsigned target) noexcept {
+#if defined(_WIN32)
+  static const auto report = reinterpret_cast<void (*)(const char*, unsigned)>(
+      reinterpret_cast<void*>(GetProcAddress(GetModuleHandleW(nullptr), "FutariCorePromotedMismatch")));
+  if (report) report(FUTARI_CORE_NAME, target);
+#else
+  FutariCorePromotedMismatch(FUTARI_CORE_NAME, target);
+#endif
+}
+void RexR1Mismatch(unsigned long long expected, unsigned long long got) noexcept {
+#if defined(_WIN32)
+  static const auto report = reinterpret_cast<void (*)(const char*, unsigned long long, unsigned long long)>(
+      reinterpret_cast<void*>(GetProcAddress(GetModuleHandleW(nullptr), "FutariCoreR1Mismatch")));
+  if (report) report(FUTARI_CORE_NAME, expected, got);
+#else
+  FutariCoreR1Mismatch(FUTARI_CORE_NAME, expected, got);
+#endif
+}
+void RexLrWriteMismatch(unsigned long long held, unsigned long long written) noexcept {
+#if defined(_WIN32)
+  static const auto report = reinterpret_cast<void (*)(const char*, unsigned long long, unsigned long long)>(
+      reinterpret_cast<void*>(GetProcAddress(GetModuleHandleW(nullptr), "FutariCoreLrWriteMismatch")));
+  if (report) report(FUTARI_CORE_NAME, held, written);
+#else
+  FutariCoreLrWriteMismatch(FUTARI_CORE_NAME, held, written);
+#endif
+}
+void RexIndirectCensus(unsigned function, unsigned site, unsigned target) noexcept {
+#if defined(_WIN32)
+  static const auto on = reinterpret_cast<bool (*)()>(
+      reinterpret_cast<void*>(GetProcAddress(GetModuleHandleW(nullptr), "FutariIndirectCensusOn")));
+  static const auto census = reinterpret_cast<void (*)(const char*, unsigned, unsigned, unsigned)>(
+      reinterpret_cast<void*>(GetProcAddress(GetModuleHandleW(nullptr), "FutariCoreIndirectCensus")));
+  if (!on || !census || !on()) {
+    g_rex_indirect_census = 0;  // the census is off: no further calls from this core
+    return;
+  }
+  census(FUTARI_CORE_NAME, function, site, target);
+#else
+  if (!FutariIndirectCensusOn()) {
+    g_rex_indirect_census = 0;
+    return;
+  }
+  FutariCoreIndirectCensus(FUTARI_CORE_NAME, function, site, target);
+#endif
+}
+}
+#endif
+
 #if defined(FUTARI_CORE_palm_abnormal)
 #define FUTARI_CORE_MEMCPY 88082260
 #elif defined(FUTARI_CORE_palm_normal) || defined(FUTARI_CORE_hirow_normal) || defined(FUTARI_CORE_hirow_abnormal)
@@ -291,6 +409,7 @@ REX_HOOK_RAW(FUTARI_NATIVE_JOIN(sub_, FUTARI_CORE_MEMCPY)) {
 #if defined(FUTARI_CORE_D3D_WAIT)
 extern "C" REX_FUNC(FUTARI_NATIVE_JOIN(__imp__sub_, FUTARI_CORE_D3D_WAIT));
 REX_HOOK_RAW(FUTARI_NATIVE_JOIN(sub_, FUTARI_CORE_D3D_WAIT)) {
+  FUTARI_RENUT_CORE_YIELD(D3D_CBlocker_Check)
   static const bool same_code =
       futari::native::CodeHash(base, FUTARI_NATIVE_HEX(FUTARI_CORE_D3D_WAIT), 54) == 0x709915D9682F53F4ull;
   if (same_code) futari::native::WaitD3DGpuProgress(base, ctx.r3.u32);
@@ -436,6 +555,7 @@ extern "C" REX_FUNC(FUTARI_CORE_FN_BIND_INLINE);
 
 #if defined(FUTARI_CORE_ALLOC_INLINE)
 REX_HOOK_RAW(FUTARI_NATIVE_JOIN(sub_, FUTARI_CORE_ALLOC_INLINE)) {
+  FUTARI_RENUT_CORE_YIELD(D3D_CDevice_AllocateInlineData)
   if (futari::native::ApiShadowInlineAlloc(ctx, base)) return;
   if (futari::native::ApiRedirectedInlineAlloc(ctx, base, &FUTARI_CORE_FN_ALLOC_INLINE)) return;
   const uint32_t words = ctx.r4.u32;
@@ -469,18 +589,22 @@ const futari::api::Module& CoreModule() {
 }
 }  // namespace
 REX_HOOK_RAW(FUTARI_NATIVE_JOIN(sub_, FUTARI_CORE_CLEAR)) {
+  FUTARI_RENUT_CORE_YIELD(D3DDevice_Clear)
   if (futari::native::ApiClear(CoreModule(), ctx, base)) return;
   FUTARI_NATIVE_JOIN(__imp__sub_, FUTARI_CORE_CLEAR)(ctx, base);
 }
 REX_HOOK_RAW(FUTARI_NATIVE_JOIN(sub_, FUTARI_CORE_RESOLVE)) {
+  FUTARI_RENUT_CORE_YIELD(D3DDevice_Resolve)
   if (futari::native::ApiResolve(CoreModule(), ctx, base)) return;
   FUTARI_NATIVE_JOIN(__imp__sub_, FUTARI_CORE_RESOLVE)(ctx, base);
 }
 REX_HOOK_RAW(FUTARI_NATIVE_JOIN(sub_, FUTARI_CORE_SPACE)) {
+  FUTARI_RENUT_CORE_YIELD(D3D_CDevice_KickOff)
   if (futari::native::ApiSpaceDuringRedirect(ctx, base)) return;
   FUTARI_CORE_FN_SPACE(ctx, base);
 }
 REX_HOOK_RAW(FUTARI_NATIVE_JOIN(sub_, FUTARI_CORE_WINDOW_SCISSOR)) {
+  FUTARI_RENUT_CORE_YIELD(D3D_SetSurfaceClip)
   if (futari::native::ApiWindowScissor(CoreModule(), ctx, base)) return;
   FUTARI_NATIVE_JOIN(__imp__sub_, FUTARI_CORE_WINDOW_SCISSOR)(ctx, base);
 }
@@ -489,6 +613,7 @@ REX_HOOK_RAW(FUTARI_NATIVE_JOIN(sub_, FUTARI_CORE_WINDOW_SCISSOR)) {
 #if defined(FUTARI_CORE_BEGIN_VERTICES)
 extern "C" REX_FUNC(FUTARI_NATIVE_JOIN(__imp__sub_, FUTARI_CORE_BEGIN_VERTICES));
 REX_HOOK_RAW(FUTARI_NATIVE_JOIN(sub_, FUTARI_CORE_BEGIN_VERTICES)) {
+  FUTARI_RENUT_CORE_YIELD(D3DDevice_BeginVertices)
   static const bool same_code = [base] {
     constexpr uint64_t kExpected = 0xAEA9EF7899734FDFull;
     const uint64_t found = futari::native::CodeHash(base, FUTARI_NATIVE_HEX(FUTARI_CORE_BEGIN_VERTICES), 293);

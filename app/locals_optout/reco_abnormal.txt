@@ -1,0 +1,17 @@
+# reco_abnormal: guest functions whose A57 code is cheaper WITHOUT the loop / leaf locals (tools/codegen_choice.py,
+# 2026-10-19; the Switch build's compile line without LTO, loop-weighted cost, off cheaper by more than
+# 2.0 %). "<tool> <name>": tool = loop (tools/loop_locals.py) or leaf (tools/leaf_locals.py).
+leaf sub_880E7570
+leaf sub_881398E8
+loop sub_88079F30
+loop sub_88083E30
+loop sub_88103340
+loop sub_8813C888
+loop sub_8813D708
+loop sub_8813E560
+loop sub_8813F6E8
+loop sub_88143538
+loop sub_881445E8
+loop sub_88145720
+loop sub_88146798
+loop sub_88147610

@@ -1,0 +1,74 @@
+# Futari's Direct3D functions for Renut's renderer: <Renut name> <default.xex address> <why>.
+# tools/renut_futari_hooks.py reads it (the cores' copies are found by their instructions).
+D3D_SetSurfaceClip                           82096B28  d3d_match 0.92 (next 0.24)
+D3DDevice_SetScissorRect                     820990E0  d3d_match 0.90 (next 0.28)
+D3DDevice_SetIndices                         820992F8  d3d_match 0.94 (next 0.38)
+D3D_SetViewport                              82099740  d3d_match 0.97 (next 0.37)
+D3D_SetSurfaceInfo                           82099A48  d3d_match 1.00 (next 0.16)
+D3DDevice_SetRenderTarget                    82099AD8  checked: reads the targets +0x3148.. and the tiling surfaces; 8209A100 is a one-instruction thunk to it
+D3DDevice_SetDepthStencilSurface             82099E28  d3d_match 0.90 (next 0.37)
+D3D_CleanupGprAllocationSetup                8209A810  d3d_match 1.00 (next 0.12)
+XGRegisterPixelShader                        8209AB48  d3d_match 1.00 (next 0.50)
+D3DDevice_SetPixelShader                     8209AB80  d3d_match 0.94 (next 0.87)
+D3DDevice_SetVertexShader                    8209AD40  checked: stores the shader at +12872 (N&B SetVertexShader +0x3198 + 0xB0)
+D3DDevice_SetVertexDeclaration               8209AF10  d3d_match 1.00 (next 0.83)
+D3DDevice_CreateVertexDeclaration            8209B018  checked: score 0.81, the only candidate in range
+D3DDevice_SetShaderGPRAllocation             8209B098  d3d_match 0.97 (next 0.26)
+D3DDevice_CreatePixelShader                  8209B2B0  checked: called as often as CreateVertexShader (22), next to it
+XGRegisterVertexShader                       8209B3A0  d3d_match 0.94 (next 0.24)
+D3DDevice_CreateVertexShader                 8209B498  d3d_match 1.00 (next 0.63)
+D3D_GetTextureDimensions                     8209B5D8  d3d_match 1.00 (next 0.85)
+D3D_GetGpuTextureDimensions                  8209B670  d3d_match 1.00 (next 0.85)
+D3DArrayTexture_UnlockRect                   8209B710  d3d_match 1.00 (next 0.83)
+D3DSurface_UnlockRect                        8209B728  d3d_match 1.00 (next 0.83)
+D3D_BlockSizeOfGpuFormat                     8209B740  d3d_match 1.00 (next 0.26)
+D3D_GetMaxMipLevels                          8209B7D8  d3d_match 1.00 (next 0.17)
+D3D_FindTextureSize                          8209B980  d3d_match 0.99 (next 0.21)
+D3D_GetMipTailLevelOffsetCoords              8209BCF0  d3d_match 0.92 (next 0.16)
+D3D_Lock2DSurface                            8209C9D8  d3d_match 0.97 (next 0.56)
+D3D_Lock3DSurface                            8209CA68  d3d_match 1.00 (next 0.53)
+D3DBaseTexture_GetLevelCount                 8209D080  d3d_match 1.00 (next 0.75)  # SAME ADDRESS AS D3DArrayTexture_GetArraySize
+# D3DArrayTexture_GetArraySize 8209D080: the same function as D3DBaseTexture_GetLevelCount (the linker folded the two): hooked once, as GetLevelCount
+D3DLineTexture_LockRect                      8209D148  d3d_match 1.00 (next 0.57)
+D3DDevice_CreateTexture                      8209D2E0  d3d_match 1.00 (next 0.39)
+D3DDevice_CreateSurface                      8209D400  checked: score 0.75, next 0.27
+D3DSurface_GetDesc                           8209D538  d3d_match 0.97 (next 0.66)
+D3DSurface_LockRect                          8209D5D0  d3d_match 1.00 (next 0.50)
+D3DVolume_GetDesc                            8209D5F8  d3d_match 0.94 (next 0.81)
+D3DVolume_LockBox                            8209D640  d3d_match 1.00 (next 0.71)
+D3DDevice_EndIndexedVertices                 8209D7F0  checked: the end of BeginVertices (4 instructions, as many calls as BeginVertices)
+D3DDevice_BeginVertices                      8209D800  d3d_match 0.91 (next 0.64)
+D3DVertexShader_Bind                         820A05A0  checked: 22 calls, with the shader creations
+D3DDevice_ClearF                             820A18C8  d3d_match 1.00 (next 0.40)
+D3DDevice_Clear                              820A19F0  d3d_match 0.96 (next 0.28)
+D3DDevice_Resolve                            820A2280  checked: the census: the resolve writer (Futari's own hook futari_api_resolve)
+D3DResource_GetType                          820A3188  d3d_match 1.00 (next 0.44)
+D3DResource_AddRef                           820A3480  d3d_match 0.97 (next 0.81)
+D3DDevice_EndExport                          820A3C38  d3d_match 0.93 (next 0.25)
+D3DResource_Release                          820A4400  d3d_match 0.94 (next 0.77)
+D3D_CBlocker_Check                           820A4590  d3d_match 0.93 (next 0.25)
+D3DDevice_Release                            820A46B8  d3d_match 0.95 (next 0.68)
+D3DDevice_UnsetAll                           820A4790  d3d_match 0.93 (next 0.28)
+Direct3D_CreateDevice                        820A4AC0  checked: allocates 24,320 bytes, the type-2 flag at +10940, behaviour flags at +24192
+D3DDevice_Swap                               820A5408  checked: the census: once a frame; the swap-count / present-fence fields of N&B Swap +0xD0
+D3DDevice_GetDeviceCaps                      820A5B68  d3d_match 1.00 (next 0.80)
+D3D_CDevice_AllocateInlineData               820A8138  checked: the inline-data allocator (docs/futari-notes.md, "The native Direct3D layer")
+D3DDevice_BlockOnFence                       820A82F0  d3d_match 0.92 (next 0.77)
+D3D_CDevice_KickOffSegment                   820A8E38  checked: score 0.82, next 0.23; the 0x3438 / 0x3440 fields +0xC8 / +0xCC
+D3D_CDevice_KickOff                          820A8FC0  d3d_match 0.95 (next 0.33)
+D3DDevice_IsFencePending                     820A90F8  d3d_match 0.97 (next 0.71)
+D3DDevice_SetPredication                     820ABB60  d3d_match 0.92 (next 0.39)
+# Added by hand (2026-10-19): just below d3d_match's bar, each with what pins it.
+D3DDevice_DrawVerticesUP                     8209DC98  checked: d3d_match 0.89 (next 0.50); the census: 283,125 calls, each nesting one BeginVertices
+D3D_RingBufferDeviceAllocate                 820A7F08  checked: d3d_match 0.85 (next 0.20); the inline allocator 820A8138 calls it (docs/futari-notes.md)
+D3D_CDevice_BeginRingBig                     820A91F0  checked: d3d_match 0.87 (next 0.41)
+D3DDevice_SetRingBufferParameters            820A92E0  checked: d3d_match 0.83 (next 0.14); called once, at start
+D3D_SynchronizeToPresentationInterval        820A4FD8  checked: d3d_match 0.83 (next 0.27); once per Swap
+D3D_ResetAllState                            82099648  checked: d3d_match 0.85 (next 0.42); once per Swap
+D3DDevice_SetScreenExtentQueryMode           820A5BC8  checked: d3d_match 0.89 (next 0.74); once per Swap
+D3DDevice_SetViewport                        820999A8  checked: d3d_match 0.84 (next 0.38); the census names it (window scissor writer callers)
+D3DDevice_SetTexture                         8209D660  checked: d3d_match 0.84 (next 0.42); 312,381 calls
+D3DDevice_SetStreamSource                    820991D8  checked: d3d_match 0.88 (next 0.41); stride byte at +0x31A0 (N&B +0x30F0 + 0xB0)
+D3D_AlignTextureDimensions                   8209B860  checked: d3d_match 0.89 (next 0.22)
+D3D_CDevice_BlockOnFence                     820A8220  checked: reads the completion pointer +10896 and the fence tag +10908 as N&B's 0x8228F558
+D3DResource_Destroy                          820A3E98  checked: d3d_match 0.60 (next 0.22); the release path's destroy (44 nested calls)

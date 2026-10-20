@@ -18,7 +18,8 @@ does); both passes are idempotent and refuse to run on a generated tree whose sh
    no guest load is reused across iterations, including loads of callees inlined into the loop (direct calls make
    that possible). Straight-line code keeps the plain loads.
 
-  python tools/perf_codegen_post.py [--undo] [--check] [--no-direct] [--no-volatile] [--hooked-list FILE]
+  python tools/perf_codegen_post.py [--undo] [--check] [--no-direct] [--no-volatile] [--no-barriers]
+                                    [--hooked-list FILE] [--gen DIR]
 
 --hooked-list FILE: more hooked functions, one sub_XXXXXXXX (or address) per line, for hooks outside the scanned sources
 (a Direct3D census build: out/census/hooks.txt, tools/d3d_census_build.py). Running the pass again without the list
@@ -44,6 +45,22 @@ IMP = re.compile(r'__imp__sub_[0-9A-Fa-f]{8}')
 NOT_A_HOOK = re.compile(r'FUTARI_HOT_RECORD_DECL\([0-9A-Fa-f]{8}\)|#include[^\n]*')
 
 
+def hash_comments_out(text):
+    """A toml's or CMakeLists.txt's text without its `#` comments (banjo-nx, 2026-10-19: 24 of its functions were on the
+    weak alias only because comments named them). A `#` inside a double-quoted string is kept."""
+    out = []
+    for line in text.split('\n'):
+        quoted = False
+        for k, c in enumerate(line):
+            if c == '"':
+                quoted = not quoted
+            elif c == '#' and not quoted:
+                line = line[:k]
+                break
+        out.append(line)
+    return '\n'.join(out)
+
+
 def hooked():
     names = set()
     for root in SOURCES:
@@ -57,6 +74,8 @@ def hooked():
                 continue
             if path.endswith(('.c', '.cc', '.cpp', '.h', '.hpp', '.inl')):
                 text = NOT_A_HOOK.sub('', COMMENT.sub('', text))
+            elif path.endswith(('.toml', 'CMakeLists.txt')):
+                text = hash_comments_out(text)
             # A call of the original (__imp__sub_X: a native layer calling Direct3D's own helper) is not a hook.
             text = IMP.sub('', text)
             for m in re.findall(r'(?<![0-9A-Fa-f])(8[28][0-9A-Fa-f]{6})(?![0-9A-Fa-f])', text):
@@ -189,6 +208,9 @@ def loop_barriers(folder, undo, check):
 
 
 def main():
+    global GEN
+    if '--gen' in sys.argv:  # another generated tree (a scratch copy for measurements: tools/post_codegen.py --gen)
+        GEN = sys.argv[sys.argv.index('--gen') + 1]
     undo = '--undo' in sys.argv
     check = '--check' in sys.argv
     with_hook = hooked()
@@ -210,7 +232,10 @@ def main():
                 ', %d back to their hook' % rehooked if rehooked else ''))
         if '--no-volatile' not in sys.argv:
             parts.append(no_volatile(folder, undo, check))
-            parts.append(loop_barriers(folder, undo, check))
+            # --no-barriers: tools/loop_barriers.py places them (tools/post_codegen.py; sa2-nx's refinement: no
+            # barrier where it has nothing to protect).
+            if '--no-barriers' not in sys.argv:
+                parts.append(loop_barriers(folder, undo, check))
         print('%-16s %s' % (os.path.basename(folder), '; '.join(parts)))
     print('%d hooked addresses respected%s' % (len(with_hook), ' (check only: nothing written)' if check else ''))
 

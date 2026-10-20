@@ -88,6 +88,7 @@ switch_profile_report = true              # the profile file (off in the release
 switch_profile_stacks = true              # CPU sampler: pc and stack of every busy thread at 1 kHz (rex_profile.log)
 futari_gpu_timestamps = true              # GPU time per submission ("GPU per Swap" lines)
 futari_gpu_marks_categories = true    # GPU time per pass category and the idle gap ("GPU per Swap" lines)
+renut_gpu_profile = 10                    # Renut renderer: GPU time per frame by kind of work, every 10 s
 futari_memory_log_s = 1                   # one "[mem]" line per second
 """
 PROFILER_OFF = """
@@ -95,7 +96,9 @@ PROFILER_OFF = """
 switch_profile_stacks = false
 futari_gpu_timestamps = false
 futari_gpu_marks_categories = false
+renut_gpu_profile = 0
 futari_memory_log_s = 0
+renut_memory_report = 0
 """
 
 
@@ -234,7 +237,11 @@ BUILTIN_HEADER = """# Mushihimesama Futari for the Switch: the fixed settings, c
 # Written by tools/make_enhancement_configs.py from app/src/futari_enhancements.cpp: edit the table there, not this file.
 # Logging and profiling are off: no logs/ folder on the SD card.
 
-# Game
+# Game. The renderer: Renut's Direct3D-level renderer on deko3d (no PM4 ring, no EDRAM model; docs/futari-notes.md
+# "The deko3d renderer"). The NRO links no Vulkan driver (FUTARI_SWITCH_NVK=OFF): the native PM4-ring renderer
+# (futari_renderer = "default") and Renut on NVK (renut_gpu_backend = "vulkan") need a build with -DFUTARI_SWITCH_NVK=ON.
+futari_renderer = "renut"
+renut_gpu_backend = "deko3d"
 futari_renderer_native = true
 futari_shader_misses = ""
 
@@ -246,6 +253,7 @@ switch_profile_report = false
 futari_gpu_timestamps = false
 futari_gpu_marks_categories = false
 futari_memory_log_s = 0
+renut_memory_report = 0
 audio_pop_detect = false
 
 # Enhancement masters (false turns every enhancement of that group off)

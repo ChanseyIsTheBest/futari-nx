@@ -10,7 +10,8 @@ A native Nintendo Switch port of the Xbox 360 version of **Mushihimesama Futari 
 
 It's not an emulator. The PowerPC code of the game's `default.xex` and of its eight game cores (`media/Module/*.xex`)
 is statically recompiled to C++ with [ReXGlue](https://github.com/rexglue/rexglue-sdk) and compiled for the Switch, and
-the game is drawn by a native Vulkan renderer running on NVK (Mesa).
+the game's Direct3D calls are drawn directly on the Switch GPU's own API, deko3d, by
+[reNut](https://github.com/masterspike52/reNut)'s Direct3D-level renderer (version 1.0.1).
 
 > [!NOTE]
 > You need your own copy of the Xbox 360 disc (a disc image, `.iso`). The Black Label and Ver 1.01 DLC packages
@@ -32,11 +33,13 @@ Your `futari-nx` folder should look like this:
   futari.nro
   LICENSES.txt
   futari.toml               (your settings; written at the first start when it is missing)
-  futari_shaders.mesp       (the game's shaders, made from your copy)
-  futari_shaders.mesp.idx
+  deko3d_glsl.bin           (the game's shaders, made from your copy)
   game_root/                (the files of your disc)
   dlc/                      (optional: Black Label and Ver 1.01, installed by the game at its first start)
 ```
+
+The game adds `deko3d_shaders.bin` and `pipeline_list.bin` there as you play (the shaders compiled for the Switch
+GPU, and the list of what it drew, so later sessions prepare it ahead).
 
 Launch it with a game override (hold **R** while starting an installed title) or a forwarder. Album applet mode does
 not give the game enough memory. If you use a forwarder, set it to a **39-bit address space**.
@@ -46,12 +49,13 @@ To build everything yourself instead, see [docs/building.md](docs/building.md).
 > [!NOTE]
 > **Updating:** open the installer page again and press **Create futari-nx-update.zip**. It only holds the new
 > `futari.nro` and the shaders, so there is no need to copy the game again: extract it over your folder. Your
-> `futari.toml`, your saves, the game files and the `cache` folder stay.
+> `futari.toml`, your saves and the game files stay. Coming from 1.0.0, `futari_shaders.mesp` (+ `.idx`) and the
+> `cache` folder are no longer used: you can delete them.
 
 > [!CAUTION]
-> **The first time you play** after installing or updating, the game compiles the graphics pipelines it has not seen
-> yet, so **IT CAN STUTTER for a moment** in new places. They are saved in `cache/` on the SD card and later sessions
-> start smoothly.
+> **The first time you play** after installing or updating, the game compiles its shaders for the Switch GPU as it
+> meets them, so **IT CAN STUTTER for a moment** in new places. They are saved next to the NRO
+> (`deko3d_shaders.bin`) and later sessions start smoothly.
 
 ## Controls
 
@@ -101,10 +105,32 @@ If you delete `futari.toml`, the game writes the default one again at the next s
 
 ## Performance
 
-The port runs at the console's stock clocks. The released NRO is built with link-time optimisation, PGO from a
-console session and the hottest functions first in memory. Every optimisation has its own setting and was checked on
-the PC to give exactly the same picture, frame for frame: the measurements are in
-[docs/futari-notes.md](docs/futari-notes.md).
+The port runs at the console's stock clocks, at a steady 60 fps. The released NRO is built with link-time
+optimisation, PGO from a console session of this version and the hottest functions first in memory. Every
+optimisation has its own setting and was checked on the PC to give exactly the same picture, frame for frame: the
+measurements are in [docs/futari-notes.md](docs/futari-notes.md).
+
+Version 1.0.1 draws with a new renderer: [reNut](https://github.com/masterspike52/reNut)'s Direct3D-level renderer
+(as the Banjo-Kazooie: Nuts & Bolts port, banjo-nx, adapted it) on deko3d, the Switch GPU's own API. The game's
+Direct3D calls are drawn directly, without writing and reading back the Xbox 360's GPU command stream and without a
+model of its EDRAM; the drawing runs on its own thread. On the console a frame takes about 1-4 ms of that thread and
+4-10 ms of the GPU, out of 16.7. It takes Sonic Adventure 2's (sa2-nx's) CPU work for this renderer too: each draw
+copies only the part of the Direct3D state that changed, so the game's thread spends far less time per draw. Input lag
+is lower: the game reads the controllers as late in its frame as it safely can, its 60 Hz follows the screen's own
+refresh, and the screen shows the newest picture with two images instead of three.
+
+It also compiles the game's code better: the improvements of the code generator and the steps after it from
+[sa2-nx](https://github.com/ChanseyIsTheBest/sa2-nx)'s three CPU rounds (the game's registers kept in the processor's
+registers, constants folded, fewer floating-point mode switches and memory barriers, direct calls where the game called
+through a pointer), on the game's program and all eight game cores. It also corrects two things 1.0.0 did differently
+from the Xbox 360 (a float-to-integer conversion rounded halves away from zero; a compiler flag that allowed
+reordering float operations across a mode switch), and guards against the black textures sa2-nx saw after hours of
+play (its texture-slot fix). On top of that it has the Banjo-Kazooie: Nuts & Bolts port's (banjo-nx's) codegen
+round: shifts and bit-field extracts where the game
+rotates words, register writes and write-backs nothing reads left out, constants found across loop heads, single
+floats computed in single precision, small memory copies inline, the stack pointer and link register kept where they
+are provably unchanged, and copies of tiny functions where they are called. Each step was checked against 1.0.0 on the
+PC, including frame by frame over a replay of the game.
 
 ## How it works
 
@@ -112,13 +138,20 @@ the PC to give exactly the same picture, frame for frame: the measurements are i
   function of the game's program and of its eight game cores (one per character and mode, all built for the same
   address and linked statically on the Switch) to C++, which is then compiled for the Switch. ReXGlue also gives the
   game what it expects from an Xbox 360: its system, files, audio and controllers.
-- **Its own renderer.** The game's GPU command stream is drawn with Vulkan by a native renderer, and the busiest
-  Direct3D paths are replaced by native code that hands the renderer its records directly.
-- **Shaders translated beforehand.** Futari keeps all its shaders inside its executables: the installer takes them
-  from your copy, translates them with [XenosRecomp](https://github.com/hedge-dev/XenosRecomp) and DXC, and packs them.
-- **Graphics driver.** Vulkan runs on NVK, from the Mesa project, through
-  [mesa-switch](https://github.com/danfromtico/mesa-switch), in the build of
-  [nfsmw-nx](https://github.com/StevensND/nfsmw-nx).
+- **A Direct3D-level renderer on deko3d** (1.0.1). The game's Direct3D calls are replaced by
+  [reNut](https://github.com/masterspike52/reNut)'s renderer (as banjo-nx adapted it), which draws them with
+  [plume](https://github.com/renderbag/plume) on [deko3d](https://github.com/devkitPro/deko3d), the Switch GPU's own
+  API: no GPU command stream is written or parsed and no EDRAM is modelled.
+- **Shaders made from your copy.** Futari keeps all its shaders inside its executables. The installer page takes them
+  from your copy and makes `deko3d_glsl.bin` in your browser: Renut's [XenosRecomp](https://github.com/hedge-dev/XenosRecomp)
+  translates each one to HLSL, DXC compiles it to SPIR-V, [SPIRV-Cross](https://github.com/KhronosGroup/SPIRV-Cross)
+  turns that into GLSL and banjo-nx's passes trim it (the way peggle2-nx's installer does it, checked against the
+  PC tools). The console compiles each one with [uam](https://github.com/devkitPro/uam) the first time
+  it is used and keeps the result. The NRO itself holds no shader of the game.
+- **1.0.0's renderer (`futari_renderer = "default"`).** The game's GPU command stream drawn with Vulkan on NVK (Mesa,
+  through [mesa-switch](https://github.com/danfromtico/mesa-switch), in the build of
+  [nfsmw-nx](https://github.com/StevensND/nfsmw-nx)), with the busiest Direct3D paths replaced by native code. It
+  stays in the source; the released NRO no longer links the Vulkan driver (`-DFUTARI_SWITCH_NVK=ON` brings it back).
 - **Audio.** The game's own mixer output goes to the Switch's audio service. The game cuts and restarts sounds on
   its 256-sample audio frame edges (a sound retriggered every few frames cuts its previous instance); the Switch output
   smooths those steps so they do not click.
@@ -137,9 +170,9 @@ the PC to give exactly the same picture, frame for frame: the measurements are i
 
 ## Build
 
-Windows, LLVM clang 20 and the VS 2022 Build Tools for the PC build; devkitA64 and libnx from
-[devkitPro](https://devkitpro.org) and NVK built from [mesa-switch](https://github.com/danfromtico/mesa-switch) for the
-Switch; Python; and your own copy of the game for the code generator. The whole process is in
+Windows, LLVM clang 20 and the VS 2022 Build Tools for the PC build; devkitA64, libnx and deko3d from
+[devkitPro](https://devkitpro.org) for the Switch (NVK from [mesa-switch](https://github.com/danfromtico/mesa-switch)
+only for 1.0.0's renderer); Python; and your own copy of the game for the code generator and the shaders. The whole process is in
 [docs/building.md](docs/building.md).
 
 <div align="center">
@@ -152,7 +185,7 @@ Switch; Python; and your own copy of the game for the code generator. The whole 
 | `tools/` | Code generation steps, build and test scripts, analysis tools |
 | `patches/` | Every change to third-party code (the SDK, FFmpeg, XenosRecomp) as diffs against upstream |
 | `pgo/` | The PGO profile the released NRO was built with |
-| `mesa/` | Which NVK driver build the NRO links |
+| `mesa/` | Which NVK driver build 1.0.0's renderer links (`-DFUTARI_SWITCH_NVK=ON`) |
 | `docs/` | Documentation |
 
 </div>
@@ -169,18 +202,25 @@ Switch; Python; and your own copy of the game for the code generator. The whole 
 - **[nebadasSwifty](https://github.com/nebadasSwifty/masseffect-nx)** — masseffect-nx: the native renderer this port's
   renderer grew from.
 - **[hedge-dev](https://github.com/hedge-dev/XenosRecomp)** — XenosRecomp, the Xenos shader translator.
+- **reNut and [masterspike52](https://github.com/masterspike52/reNut)** — reNut's Direct3D-level renderer, which the
+  deko3d renderer is (reused with its author's permission); and Banjo-Kazooie: Nuts & Bolts' port (banjo-nx), whose
+  adaptation of it, plume deko3d back end, shader passes and tools this port takes.
+- **[plume](https://github.com/renderbag/plume)** (from UnleashedRecomp), **[deko3d](https://github.com/devkitPro/deko3d)**
+  and **[uam](https://github.com/devkitPro/uam)** by fincs, with SwitchWakerHD's uam patches.
 - **[danfromtico](https://github.com/danfromtico/mesa-switch)** and **[NaGaa95](https://github.com/NaGaa95/mesa-switch)**
   — mesa-switch: Mesa, NVK and NAK on Horizon.
 - **[devkitPro](https://devkitpro.org) and [switchbrew](https://github.com/switchbrew/libnx)** — devkitA64 and libnx.
 - The sibling ports ([Sonic Adventure 2](https://github.com/ChanseyIsTheBest/sa2-nx), Banjo-Kazooie: Nuts & Bolts,
-  Sonic & All-Stars Racing Transformed, Peggle 2), which share their fixes with this one.
+  Sonic & All-Stars Racing Transformed, Peggle 2), which share their fixes with this one; Peggle 2's port (peggle2-nx)
+  for the installer's deko3d shader chain and Renut's translator front end without DXC.
+- **[KhronosGroup](https://github.com/KhronosGroup/SPIRV-Cross)** — SPIRV-Cross.
 - The other libraries listed in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
 
 ## Legal
 
 No affiliation with CAVE, Microsoft or Nintendo. "Mushihimesama Futari" is a trademark of CAVE Interactive. This
 repository contains no assets or program code from the original game. Users must provide their own legally obtained
-copy, and everything made from it (`assets/`, `app/generated/`, the shader package) is made on their own computer.
+copy, and everything made from it (`assets/`, `app/generated/`, the shaders) is made on their own computer.
 Running homebrew requires custom firmware, which violates Nintendo's ToS and can get a console banned — your call.
 
 Source code is provided under the GPL-3.0 License (see [LICENSE](LICENSE)), like the ports it builds on. The SDK keeps

@@ -425,6 +425,24 @@ REXCVAR_DEFINE_INT32(futari_native_textures_mb_max, kTexturesMbMaxByDefault, "FU
     .range(0, 4096)
     .lifecycle(rex::cvar::Lifecycle::kInitOnly);
 /*
+ * futari-nx (2026-10-14, sa2-nx's finding after its long-session reports: textures black and geometry missing after
+ * 3-4 hours, until restart). The texture cache evicted only by bytes, and a texture takes a view slot too: the 2D
+ * heap has 4,096 (kCapacityHeap). ReserveSlot returned 0 once it was full, the view then got slot 0, the EMPTY
+ * texture ("texture pool full", cause 35), and nothing ever made room. A game of small sprites fills the views long
+ * before 512 MB of texels. With this key a heap more than 3/4 full sheds its 32 coldest textures (unused for 120
+ * frames, like the byte eviction) every 16 frames until it is under 5/8, and a view that found no slot makes an eighth
+ * of the heap go at the next frame. Below 3/4 nothing changes.
+ */
+REXCVAR_DEFINE_BOOL(futari_native_texture_slots_evict, true, "FUTARI",
+                    "Native renderer: a texture view heap more than 3/4 full sheds its coldest textures (unused for "
+                    "120 frames), so a long session cannot run out of view slots (textures black until restart)")
+    .lifecycle(rex::cvar::Lifecycle::kInitOnly);
+REXCVAR_DEFINE_INT32(futari_diag_texture_slots, 0, "FUTARI",
+                     "Diagnostic: hand out only N view slots of the 2D texture heap (0 = all 4,095), so a PC run "
+                     "reaches the shortage in minutes")
+    .range(0, 4095)
+    .lifecycle(rex::cvar::Lifecycle::kInitOnly);
+/*
  * Creating a new texture without stalling the ring thread.
  *
  * With the memory pool, creating a texture no longer asks the system for memory, but vkBindImageMemory
@@ -6181,6 +6199,8 @@ class DrawsVulkanImpl final : public DrawsVulkan {
   static constexpr uint32_t kDropPerFrame = 4;
 
   void EvictTexturesIfDoesMissing() {
+    EvictTexturesForSlots();  // futari_native_texture_slots_evict: before the byte limit, and without one too
+    ReportSlots();
     const uint64_t limit = uint64_t(std::max(textures_mb_max_, 0)) << 20;
     if (!limit) {
       return;
@@ -6195,6 +6215,98 @@ class DrawsVulkanImpl final : public DrawsVulkan {
       attempt_eviction_ = frame_;
       DropTextures(limit / 4 * 3, kFramesNoUsageForDrop, "above the limit");
     }
+  }
+
+  // futari_native_texture_slots_evict (see the key). Heaps 0-2 hold texture views (2D, 3D, cube); heap 3 is samplers.
+  void EvictTexturesForSlots() {
+    if (!slots_evict_) {
+      return;
+    }
+    for (uint32_t heap = 0; heap < 3; ++heap) {
+      const uint32_t capacity = SlotsCapacity(heap);
+      if (!capacity) {
+        continue;
+      }
+      if (slots_full_[heap]) {  // a view got the empty texture: an eighth of the heap goes now
+        slots_full_[heap] = false;
+        slots_shedding_[heap] = true;
+        DropColdOfHeap(heap, std::max(capacity / 8, 1u), "a view found no slot");
+        continue;
+      }
+      const uint32_t used = SlotsUsed(heap);
+      if (used > capacity / 4 * 3) {
+        slots_shedding_[heap] = true;
+      } else if (used <= capacity / 8 * 5) {
+        slots_shedding_[heap] = false;
+      }
+      if (slots_shedding_[heap] && frame_ % 16 == 0) {
+        DropColdOfHeap(heap, 32, "more than 3/4 full");
+      }
+    }
+  }
+
+  // The `count` coldest textures (unused for kFramesNoUsageForDrop frames) that have a view in `heap`.
+  uint32_t DropColdOfHeap(uint32_t heap, uint32_t count, const char* reason) {
+    std::unordered_set<VkImage> in_heap;
+    for (const auto& [key, view] : views_) {
+      if (view.heap == heap) {
+        in_heap.insert(view.image);
+      }
+    }
+    std::vector<std::pair<uint64_t, uint64_t>> candidate;  // (last frame it was prepared, key)
+    for (const auto& [key, texture] : textures_) {
+      // Nor those with a bind in flight, as in the byte eviction.
+      if (texture.image.image == VK_NULL_HANDLE || texture.needs_upload || texture.in_flight ||
+          texture.frame == UINT64_MAX || texture.frame + kFramesNoUsageForDrop >= frame_ ||
+          !in_heap.count(texture.image.image)) {
+        continue;
+      }
+      candidate.emplace_back(texture.frame, key);
+    }
+    if (candidate.empty()) {
+      return 0;  // all hot: nothing is forced
+    }
+    if (candidate.size() > count) {
+      std::partial_sort(candidate.begin(), candidate.begin() + count, candidate.end());
+      candidate.resize(count);
+    }
+    std::unordered_set<VkImage> images;
+    for (const auto& [last, key] : candidate) {
+      auto it = textures_.find(key);
+      images.insert(it->second.image.image);
+      bytes_textures_ -= std::min(bytes_textures_, it->second.bytes);
+    }
+    const uint32_t before = SlotsUsed(heap);
+    DropImages(images);
+    released_textures_ += images.size();
+    slots_dropped_ += images.size();
+    if (frame_ >= warning_slots_ + 600) {  // one line every 600 frames, not one per batch
+      warning_slots_ = frame_;
+      REXLOG_INFO("[native] C3: texture view heap {} {} ({} of {} slots): {} cold textures dropped, {} slots now; "
+                  "{} textures remain ({} dropped for slots in total)",
+                  heap, reason, before, SlotsCapacity(heap), images.size(), SlotsUsed(heap), textures_.size(),
+                  slots_dropped_);
+    }
+    return uint32_t(images.size());
+  }
+
+  // Every 600 frames: the view slots in use, and what the textures take (texel data, which is what the byte limit
+  // counts, against whole 64 KB pool units, which is what they occupy at least).
+  void ReportSlots() {
+    if (frame_ < report_slots_ + 600) {
+      return;
+    }
+    report_slots_ = frame_;
+    uint64_t units = 0;
+    for (const auto& [key, texture] : textures_) {
+      units += std::max<uint64_t>((texture.bytes + kUnitPoolBytes - 1) / kUnitPoolBytes, 1);
+    }
+    REXLOG_INFO("[native] C3 texture slots (futari_native_texture_slots_evict {}): 2D {}/{}, 3D {}/{}, cube {}/{}, "
+                "samplers {}/{}; {} textures, {} MB of texel data, at least {} MB in pool units; {} dropped for slots, "
+                "{} views found no slot",
+                slots_evict_ ? "on" : "off", SlotsUsed(0), SlotsCapacity(0), SlotsUsed(1), SlotsCapacity(1),
+                SlotsUsed(2), SlotsCapacity(2), SlotsUsed(3), SlotsCapacity(3), textures_.size(),
+                bytes_textures_ >> 20, (units * kUnitPoolBytes) >> 20, slots_dropped_, slots_full_events_);
   }
 
   // The kDropPerFrame oldest cold ones. Without sorting the whole cache: they are picked on the fly.
@@ -8384,6 +8496,11 @@ class DrawsVulkanImpl final : public DrawsVulkan {
     textures_mb_max_ = REXCVAR_GET(futari_native_textures_mb_max);
     REXLOG_INFO("[native] C3: texture cache limit (futari_native_textures_mb_max) = {} MB{}", textures_mb_max_,
                 textures_mb_max_ > 0 ? "" : " (no limit)");
+    slots_evict_ = REXCVAR_GET(futari_native_texture_slots_evict);
+    diag_slots_ = uint32_t(std::max(REXCVAR_GET(futari_diag_texture_slots), 0));
+    REXLOG_INFO("[native] C3: texture view slots shed when a heap is 3/4 full (futari_native_texture_slots_evict) = "
+                "{}{}", slots_evict_ ? "YES" : "no",
+                diag_slots_ ? fmt::format("; DIAGNOSTIC: only {} slots of the 2D heap", diag_slots_) : std::string());
     alignment_ubo_ = std::max<VkDeviceSize>(16, vulkan_device_->properties().minUniformBufferOffsetAlignment);
     REXLOG_INFO("[native] C6: constants through dynamic UBO (futari_native_constants_ubo) = {}; alignment {} bytes",
                 use_ubo_ ? "YES" : "no", alignment_ubo_);
@@ -8568,12 +8685,39 @@ class DrawsVulkanImpl final : public DrawsVulkan {
 
   uint32_t ReserveSlot(uint32_t heap) {
     auto& m = heaps_[heap];
+    // futari_diag_texture_slots: only that many slots of the 2D heap are handed out. (The heap itself keeps its
+    // size: sa2-nx found that shrinking the capacity at init made the draws fail to prepare.)
+    if (heap == 0 && diag_slots_ && SlotsUsed(0) >= diag_slots_) {
+      NoteSlotsFull(0);
+      return 0;
+    }
     if (!m.free.empty()) {
       const uint32_t slot = m.free.back();
       m.free.pop_back();
       return slot;
     }
-    return m.next < m.capacity ? m.next++ : 0;
+    if (m.next < m.capacity) {
+      return m.next++;
+    }
+    NoteSlotsFull(heap);
+    return 0;
+  }
+
+  // View slots in use in a heap (slot 0 is the empty texture) and how many it can hand out.
+  uint32_t SlotsUsed(uint32_t heap) const {
+    const auto& m = heaps_[heap];
+    return (m.next - 1) - uint32_t(m.free.size());
+  }
+  uint32_t SlotsCapacity(uint32_t heap) const {
+    const uint32_t all = heaps_[heap].capacity ? heaps_[heap].capacity - 1 : 0;
+    return heap == 0 && diag_slots_ ? std::min(diag_slots_, all) : all;
+  }
+  // A view found no slot: it was drawn with the empty texture. Room is made at the next frame.
+  void NoteSlotsFull(uint32_t heap) {
+    if (heap < 3) {
+      slots_full_[heap] = true;
+      ++slots_full_events_;
+    }
   }
 
   // The draw's vertex input, recomputed only when the patched VS changes.
@@ -13462,6 +13606,12 @@ class DrawsVulkanImpl final : public DrawsVulkan {
   uint64_t megabytes_bytes_ = 0;
   uint64_t bytes_textures_ = 0;  // texture images created (C6 report)
   int32_t textures_mb_max_ = 0;   // futari_native_textures_mb_max
+  // futari_native_texture_slots_evict / futari_diag_texture_slots
+  bool slots_evict_ = true;
+  uint32_t diag_slots_ = 0;
+  bool slots_full_[3] = {};      // a view found no slot in that heap since the last frame
+  bool slots_shedding_[3] = {};  // between 3/4 and 5/8 full on the way down
+  uint64_t slots_full_events_ = 0, slots_dropped_ = 0, warning_slots_ = 0, report_slots_ = 0;
   // Large slabs from which textures take chunks, instead of a dedicated allocation per texture (1.9 ms of
   // CPU each on Horizon). Finish() goes in the destructor after the DestroyImage loops, never before.
   PoolTextures pool_textures_;

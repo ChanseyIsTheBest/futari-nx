@@ -48,7 +48,7 @@ Get-ChildItem (Join-Path $root 'out') -Filter 'default_image.*.bin' | ForEach-Ob
 }
 
 if ($Perf) {
-    python (Join-Path $root 'tools\perf_codegen_post.py')
-    if ($LASTEXITCODE -ne 0) { throw 'perf_codegen_post.py failed' }
+    python (Join-Path $root 'tools\post_codegen.py')
+    if ($LASTEXITCODE -ne 0) { throw 'post_codegen.py failed' }
 }
 Write-Host "done: $app\generated"
