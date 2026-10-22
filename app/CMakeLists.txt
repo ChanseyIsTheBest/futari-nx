@@ -594,6 +594,6 @@ if(REXGLUE_PLATFORM_SWITCH)
     rexglue_switch_add_nro(futari
         NAME "Mushihimesama Futari"
         AUTHOR "ChanseyIsTheBest"
-        VERSION "1.0.1"
+        VERSION "1.0.2"
         ICON "${CMAKE_CURRENT_SOURCE_DIR}/futari_icon.jpg")
 endif()

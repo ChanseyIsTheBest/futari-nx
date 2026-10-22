@@ -97,6 +97,7 @@ pair.
 | --- | --- |
 | `input_xbox_layout` | Face buttons by position (`true`, default) or by letter (`false`) |
 | `input_joycon_sideways` | Single Joy-Cons held sideways, one per player (`true`, default) |
+| `input_joycon_sideways_stick` | With it, a single Joy-Con's stick turned for the sideways grip (`true`, default) |
 | `[input_p1]`, `[input_p2]` | Each player's buttons: for every Xbox button, the Switch buttons that press it, e.g. `a = "B, ZR"` |
 
 </div>

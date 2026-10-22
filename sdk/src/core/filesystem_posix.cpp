@@ -13,7 +13,9 @@
 #include <stdio.h>
 #include <string.h>
 
+#include <algorithm>
 #include <iostream>
+#include <memory>
 
 #include <fcntl.h>
 #include <sys/stat.h>
@@ -240,6 +242,71 @@ class PosixFileHandle : public FileHandle {
     close(handle_);
     handle_ = -1;
   }
+#if defined(__SWITCH__)
+  /*
+   * peggle1-nx (2026-10-21): on Horizon the file system never sees the caller's buffer. The buffers here are usually
+   * guest memory, mapped through process code memory and committed page by page on first touch
+   * (core/guest_memory_switch.h), which the file system refuses as an IPC transfer buffer (0xD401: the asset pack
+   * saw it and reads such pieces through a host buffer, pack_storage_switch.cpp). Peggle's first read of its DLC
+   * (content.pak, 22,907,436 bytes in one NtReadFile, straight into a fresh guest allocation) froze the whole console
+   * with no log or crash report. So every read and write goes through a host buffer in 1 MB pieces: one memcpy more
+   * (about 5 ms for those 23 MB on the A57), the same results as one pread / pwrite (a short piece ends the transfer
+   * with what was moved, an error before the first byte is an error).
+   * futari-nx (2026-10-22, from guwange-nx): in Guwange, built on this tree, the same reads (its resource archives
+   * read into fresh guest allocations right after the CAVE logo) sometimes ended the console with ams.mitm
+   * (010041544D530000) calling std::abort() (0xffe). Futari reads its files the same way.
+   */
+  static constexpr size_t kPiece = size_t(1) << 20;
+  static uint8_t* Bounce() {
+    static thread_local std::unique_ptr<uint8_t[]> bounce;
+    if (!bounce) bounce = std::make_unique<uint8_t[]>(kPiece);
+    return bounce.get();
+  }
+  bool Read(size_t file_offset, void* buffer, size_t buffer_length,
+            size_t* out_bytes_read) override {
+    uint8_t* const bounce = Bounce();
+    auto* out = static_cast<uint8_t*>(buffer);
+    size_t total = 0;
+    while (total < buffer_length) {
+      const size_t piece = std::min(kPiece, buffer_length - total);
+      const ssize_t got = pread(handle_, bounce, piece, off_t(file_offset + total));
+      if (got < 0) {
+        if (!total) {
+          *out_bytes_read = 0;
+          return false;
+        }
+        break;
+      }
+      std::memcpy(out + total, bounce, size_t(got));
+      total += size_t(got);
+      if (size_t(got) < piece) break;
+    }
+    *out_bytes_read = total;
+    return true;
+  }
+  bool Write(size_t file_offset, const void* buffer, size_t buffer_length,
+             size_t* out_bytes_written) override {
+    uint8_t* const bounce = Bounce();
+    const auto* in = static_cast<const uint8_t*>(buffer);
+    size_t total = 0;
+    while (total < buffer_length) {
+      const size_t piece = std::min(kPiece, buffer_length - total);
+      std::memcpy(bounce, in + total, piece);
+      const ssize_t put = pwrite(handle_, bounce, piece, off_t(file_offset + total));
+      if (put < 0) {
+        if (!total) {
+          *out_bytes_written = 0;
+          return false;
+        }
+        break;
+      }
+      total += size_t(put);
+      if (size_t(put) < piece) break;
+    }
+    *out_bytes_written = total;
+    return true;
+  }
+#else
   bool Read(size_t file_offset, void* buffer, size_t buffer_length,
             size_t* out_bytes_read) override {
     ssize_t out = pread(handle_, buffer, buffer_length, file_offset);
@@ -260,6 +327,7 @@ class PosixFileHandle : public FileHandle {
     *out_bytes_written = static_cast<size_t>(out);
     return true;
   }
+#endif
   bool SetLength(size_t length) override { return ftruncate(handle_, length) >= 0 ? true : false; }
   void Flush() override { fsync(handle_); }
 
