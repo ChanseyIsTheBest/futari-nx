@@ -128,6 +128,14 @@ void ApplyToml(const toml::table& toml, RecompilerConfig& cfg, const std::string
             hasBool("fp_copy_only_functions"), "fp_copy_only_functions");
   MergeBool(cfg.dcbtPrefetch, toml["dcbt_prefetch"].value_or(false), hasBool("dcbt_prefetch"), "dcbt_prefetch");
   MergeBool(cfg.divInline, toml["div_inline"].value_or(false), hasBool("div_inline"), "div_inline");
+  MergeBool(cfg.vmxExactMinMax, toml["vmx_exact_minmax"].value_or(false), hasBool("vmx_exact_minmax"),
+            "vmx_exact_minmax");
+  MergeBool(cfg.vmxFusedMadd, toml["vmx_fused_madd"].value_or(false), hasBool("vmx_fused_madd"), "vmx_fused_madd");
+  MergeBool(cfg.vmxExpteRange, toml["vmx_expte_range"].value_or(false), hasBool("vmx_expte_range"),
+            "vmx_expte_range");
+  MergeBool(cfg.vmxCmpbNan, toml["vmx_cmpb_nan"].value_or(false), hasBool("vmx_cmpb_nan"), "vmx_cmpb_nan");
+  MergeBool(cfg.vmxDotOverflowQnan, toml["vmx_dot_overflow_qnan"].value_or(false), hasBool("vmx_dot_overflow_qnan"),
+            "vmx_dot_overflow_qnan");
   MergeBool(cfg.skipMsr, toml["skip_msr"].value_or(false), hasBool("skip_msr"), "skip_msr");
   MergeBool(cfg.ctrAsLocalVariable, toml["ctr_as_local"].value_or(false), hasBool("ctr_as_local"),
             "ctr_as_local");

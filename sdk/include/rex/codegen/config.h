@@ -175,6 +175,24 @@ struct RecompilerConfig {
   // select for the signed overflow case, without a branch. Same results on every platform. A divisor the compiler
   // knows keeps the C expression (it turns that into a multiplication).
   bool divInline = false;
+  // futari-nx (2026-10-26): VMX float results as the Xbox 360 gives them, where the code generator wrote x86's
+  // (simde emulates x86 on AArch64 too, so the PC and the Switch builds agreed with each other and not with the 360).
+  // Each its own key, so one can be put back. The helpers are in rex/ppc/intrinsics.h.
+  //   vmx_exact_minmax       vmaxfp / vminfp: a NaN operand gives that NaN quieted (vA's first), max(+0, -0) = +0
+  //                          and min(+0, -0) = -0. x86's maxps / minps return the second operand for a NaN or two
+  //                          zeros. AArch64: FMAX / FMIN, one instruction.
+  //   vmx_fused_madd         vmaddfp / vmaddcfp128 / vnmsubfp fused (one rounding), as AltiVec's are; they were a
+  //                          multiply and an add (two roundings; +max * 2 - +max overflowed). AArch64: FMLA.
+  //   vmx_expte_range        vexptefp: 0 below -126 (the 360 flushes the denormal results), +inf from 128, a NaN
+  //                          quieted; the polynomial's exponent arithmetic made garbage outside [-126, 128).
+  //   vmx_cmpb_nan           vcmpbfp: a NaN operand sets both bound bits (out of bounds), as on the 360.
+  //   vmx_dot_overflow_qnan  vmsum3fp128 / vmsum4fp128: QNaN where the sum of finite inputs overflows
+  //                          (rexglue-sdk PR #492).
+  bool vmxExactMinMax = false;
+  bool vmxFusedMadd = false;
+  bool vmxExpteRange = false;
+  bool vmxCmpbNan = false;
+  bool vmxDotOverflowQnan = false;
   std::unordered_set<uint32_t> lrKeepReturns;
   bool ctrAsLocalVariable = false;
   bool xerAsLocalVariable = false;

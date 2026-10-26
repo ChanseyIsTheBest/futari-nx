@@ -284,15 +284,22 @@ extern "C" void RexLrWriteMismatch(unsigned long long held, unsigned long long w
   LrWriteMismatch("default", held, written);
 }
 extern "C" void RexPromotedMismatch(unsigned target) noexcept { PromotedMismatch("default", target); }
+// futari_audio_diag (futari_audio_diag.cpp) turns the census call on to learn which function made an indirect call.
+thread_local unsigned g_futari_indirect_caller = 0;
+bool g_futari_census_table = false;
+bool FutariAudioDiagWantsCallers();
+
 extern "C" void RexIndirectCensus(unsigned function, unsigned site, unsigned target) noexcept {
-  Census("default", function, site, target);
+  g_futari_indirect_caller = function;
+  if (g_futari_census_table) Census("default", function, site, target);
 }
 
 namespace futari::native {
 
 void CodegenChecksInit() {
-  g_rex_indirect_census = REXCVAR_GET(futari_diag_indirect_census).empty() ? 0 : 1;
-  if (g_rex_indirect_census) {
+  g_futari_census_table = !REXCVAR_GET(futari_diag_indirect_census).empty();
+  g_rex_indirect_census = (g_futari_census_table || FutariAudioDiagWantsCallers()) ? 1 : 0;
+  if (g_futari_census_table) {
     REXLOG_INFO("[census] indirect calls: every tagged call site reports its target; the table goes to {} with each "
                 "report", REXCVAR_GET(futari_diag_indirect_census));
   }
@@ -353,7 +360,12 @@ void CodegenChecksReport(int seconds) {
       }
     }
   }
-  if (g_rex_indirect_census) WriteCensus(seconds);
+  if (g_futari_census_table) WriteCensus(seconds);
+}
+
+// futari_audio_diag's 10 s report writes the census too (CodegenChecksReport runs from the renderers' reports only).
+void CensusWriteFromAudioDiag() {
+  if (g_futari_census_table) WriteCensus(10);
 }
 
 }  // namespace futari::native
@@ -364,7 +376,7 @@ void CodegenChecksReport(int seconds) {
 #else
 #define FUTARI_CHECKS_EXPORT extern "C" __attribute__((visibility("default")))
 #endif
-FUTARI_CHECKS_EXPORT bool FutariIndirectCensusOn() { return g_rex_indirect_census != 0; }
+FUTARI_CHECKS_EXPORT bool FutariIndirectCensusOn() { return g_futari_census_table; }
 FUTARI_CHECKS_EXPORT void FutariCoreIndirectCensus(const char* module, unsigned function, unsigned site,
                                                                unsigned target) {
   Census(module, function, site, target);

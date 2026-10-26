@@ -697,6 +697,43 @@ samples' slope, > 6x the frames' mean |second difference| and > 0.03: 339 edges 
 second; 45 instead of 37 in the burst). Every other sample is unchanged (checked on the burst: only the treated frames
 differ). out/audio_compare/burst_535s_{off,v1,smooth,predict,both}.wav are the burst with each setting.
 
+### The crackle's cause, and the fade on cut (2026-10-26, 1.0.3)
+
+The user: no crackle on a real 360, so an emulation difference was looked for. Every test is one PC replay of slot 5
+(lockstep, declick keys off), counted with the detector's rule (135 steps over the run, 31 in the 535-545 s burst):
+- Not the VMX float semantics: the five codegen options of sdk/include/rex/codegen/config.h (vmx_exact_minmax,
+  vmx_fused_madd, vmx_expte_range, vmx_cmpb_nan, vmx_dot_overflow_qnan, all on in app/perf_overrides.toml): 135 / 31.
+- Not the audio pacing: audio_sdl_pump (the callback every 5.333 ms, as the 360's hardware calls it): 136. The game's
+  render-driver callback (sub_821396C0) wakes XAudio2's thread and waits for its frame; XAudio2 waits with no timeout
+  (engine +124 = 1) and runs exactly one pass per callback (no frame lost or mixed twice).
+- Not the update rate: the game's sound thread (default sub_821CB108) runs its callback (the game core's
+  sub_88090480: XACT's update, its 8 channel fades every 16 loops) and waits 1 ms; Windows' 15.6 ms tick makes that
+  ~16 ms. With timeBeginPeriod(1) it ran ~4x as often: 121 steps. Also not the clock (mftb is the 50 MHz guest clock),
+  the spinlocks (real locks) or XACT instance limits (every cue is simple, every category limit 255, no fades).
+- The cause (app/src/native/futari_audio_diag.cpp: XAudio2 / XACT calls with their threads, callers and the voices'
+  resampler output): the game plays each effect on one of its channels, and playing on a channel FIRST destroys the
+  cue still playing there (reco_abnormal sub_88090588 -> sub_880901B8: UnRegisterNotification, IXACT3Cue::Destroy;
+  14,997 of 15,005 plays did, up to 23 plays a second of se11a in the burst). XACT's Destroy (default sub_820EC8F8)
+  deletes the cue at once and XAudio2 drops the voice from the next pass. The effects (SE.xwb: 70 mono 44.1 kHz xWMA
+  waves, decoded in software by XACT) are near full scale where they are cut: an ffmpeg decode of the bank's own
+  packets (scratchpad xwb_to_xwma.py) peaks 0.4-1.0 in every 10 ms of the first 150 ms. XAudio2 has no click-free stop
+  or destroy, so the same calls cut the same way whatever runs them; whether a real 360 hides it is not known.
+
+The fade (app/src/native/futari_sound_fade.cpp; tested as the key futari_sound_fade_on_cut, always on without a key
+since 1.0.3 at the user's request): IXACT3Cue::Destroy first sets the
+cue's output matrix to zeros (IXACT3Cue::SetMatrixCoefficients, sub_820ECE08, with the counts of the game's own calls:
+2 x 6) and returns S_OK; the cue is destroyed 4 XAudio2 passes (21 ms) later, from the game's next Play or Destroy.
+Pending cues are destroyed at once before IXACT3SoundBank::Destroy (sub_820EEB60) and IXACT3Engine::ShutDown
+(sub_820E6A98, vtable 0x82013F48 slot 5). The pass count comes from futari_audio_diag.cpp's hook of sub_82137218 (the
+Switch build keeps only that part of the file). Replay: 1 step in 600 s (a one-channel attack at 253.5 s that a run
+without the fade had too) instead of 135, 0 in the burst, the burst's level unchanged (RMS 0.133 / 0.132), dropouts and
+late frames as before (3 one-channel steps in the next run, VMX options off). out/audio_compare/fade_burst_535s_off.wav
+is the burst. Console (test NRO out/switch_ab/AF_sound_fade_test, declick off): the user heard one crackle in a whole
+run, and the fade sounds better than the declick. 1.0.3 forces the Switch declick (above) off whatever a config says
+(futari_enhancements.cpp Apply; its three keys left the enhancement table); neither one adds latency (the declick
+only reshapes the frame after a step, the fade only lets the cut sound last 21 ms longer). The VMX options are off
+again in 1.0.3 (app/generated restored from out/generated_before_vmx).
+
 ### Two players (2026-10-14)
 
 Tested on the PC after peggle2-nx found that its game needs a second signed-in user for player 2: Futari does not.

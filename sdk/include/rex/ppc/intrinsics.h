@@ -495,6 +495,137 @@ inline simde__m128i simde_mm_sllv_epi8(simde__m128i a, simde__m128i count) {
 #endif
 }
 
+//=============================================================================
+// VMX float results as the Xbox 360 gives them (futari-nx, 2026-10-26)
+//=============================================================================
+// The code generator wrote these instructions as x86 SSE through simde, which emulates x86 on AArch64 too: the PC
+// and the Switch agreed with each other and not with the 360. Each has its codegen key (rex/codegen/config.h,
+// vmx_*). The vector unit always runs with denormals flushed (the code generator's flush mode): AArch64's FZ flushes
+// the inputs and results of FMAX / FMIN / FMLA; on x86 DAZ / FTZ cover the SSE arithmetic but neither bitwise
+// operations nor a library std::fma, so the x86 forms flush those by hand. Both forms give the same bits.
+
+// A NaN quieted (its quiet bit set, the payload and sign kept), as the vector unit returns one.
+inline simde__m128 vmx_quiet_ps(simde__m128 v) {
+  return simde_mm_or_ps(v, simde_mm_castsi128_ps(simde_mm_set1_epi32(0x00400000)));
+}
+
+// A denormal (and a zero) as the zero of its sign; everything else as it is. By the exponent bits, so it does not
+// depend on DAZ.
+inline simde__m128 vmx_flush_ps(simde__m128 v) {
+  const simde__m128i bits = simde_mm_castps_si128(v);
+  const simde__m128i zero_exponent =
+      simde_mm_cmpeq_epi32(simde_mm_and_si128(bits, simde_mm_set1_epi32(0x7F800000)), simde_mm_setzero_si128());
+  const simde__m128i sign = simde_mm_and_si128(bits, simde_mm_set1_epi32(int(0x80000000)));
+  return simde_mm_castsi128_ps(simde_mm_blendv_epi8(bits, sign, zero_exponent));
+}
+
+// One float's NaN quieted, and the quiet test of AArch64's NaN priority.
+inline float vmx_quiet_f32(float v) {
+  uint32_t bits;
+  std::memcpy(&bits, &v, 4);
+  bits |= 0x00400000;
+  std::memcpy(&v, &bits, 4);
+  return v;
+}
+
+inline bool vmx_is_snan_f32(float v) {
+  uint32_t bits;
+  std::memcpy(&bits, &v, 4);
+  return (bits & 0x7F800000) == 0x7F800000 && (bits & 0x007FFFFF) != 0 && !(bits & 0x00400000);
+}
+
+// vmaxfp / vminfp (vmx_exact_minmax): a NaN operand gives that NaN quieted, vA's before vB's; max(+0, -0) = +0,
+// min(+0, -0) = -0. x86's maxps / minps return the second operand for a NaN or for two zeros (and simde builds
+// exactly that on AArch64: a compare and a select).
+inline simde__m128 vmx_max_ps(simde__m128 a, simde__m128 b) {
+#if defined(REX_VMX_HELPERS_NEON)
+  // FMAX gives vB's NaN quieted when only vB is one, and the zeros as AltiVec does; a NaN in vA comes first.
+  const float32x4_t na = simde__m128_to_neon_f32(a);
+  const float32x4_t r = vmaxq_f32(na, simde__m128_to_neon_f32(b));
+  const uint32x4_t a_nan = vmvnq_u32(vceqq_f32(na, na));
+  const float32x4_t qa = vreinterpretq_f32_u32(vorrq_u32(vreinterpretq_u32_f32(na), vdupq_n_u32(0x00400000)));
+  return simde__m128_from_neon_f32(vbslq_f32(a_nan, qa, r));
+#else
+  a = vmx_flush_ps(a);
+  b = vmx_flush_ps(b);
+  simde__m128 r = simde_mm_max_ps(a, b);
+  r = simde_mm_blendv_ps(r, simde_mm_and_ps(a, b), simde_mm_cmpeq_ps(a, b));  // two zeros: +0 unless both are -0
+  r = simde_mm_blendv_ps(r, vmx_quiet_ps(b), simde_mm_cmpunord_ps(b, b));
+  return simde_mm_blendv_ps(r, vmx_quiet_ps(a), simde_mm_cmpunord_ps(a, a));
+#endif
+}
+
+inline simde__m128 vmx_min_ps(simde__m128 a, simde__m128 b) {
+#if defined(REX_VMX_HELPERS_NEON)
+  const float32x4_t na = simde__m128_to_neon_f32(a);
+  const float32x4_t r = vminq_f32(na, simde__m128_to_neon_f32(b));
+  const uint32x4_t a_nan = vmvnq_u32(vceqq_f32(na, na));
+  const float32x4_t qa = vreinterpretq_f32_u32(vorrq_u32(vreinterpretq_u32_f32(na), vdupq_n_u32(0x00400000)));
+  return simde__m128_from_neon_f32(vbslq_f32(a_nan, qa, r));
+#else
+  a = vmx_flush_ps(a);
+  b = vmx_flush_ps(b);
+  simde__m128 r = simde_mm_min_ps(a, b);
+  r = simde_mm_blendv_ps(r, simde_mm_or_ps(a, b), simde_mm_cmpeq_ps(a, b));  // two zeros: -0 if either is -0
+  r = simde_mm_blendv_ps(r, vmx_quiet_ps(b), simde_mm_cmpunord_ps(b, b));
+  return simde_mm_blendv_ps(r, vmx_quiet_ps(a), simde_mm_cmpunord_ps(a, a));
+#endif
+}
+
+// vmaddfp / vmaddcfp128 (vmx_fused_madd): a * b + c with one rounding, as AltiVec's multiply-add is.
+inline simde__m128 vmx_madd_ps(simde__m128 a, simde__m128 b, simde__m128 c) {
+#if defined(REX_VMX_HELPERS_NEON)
+  return simde__m128_from_neon_f32(vfmaq_f32(simde__m128_to_neon_f32(c), simde__m128_to_neon_f32(a),
+                                             simde__m128_to_neon_f32(b)));  // FMLA
+#else
+  // No FMA instruction in the PC build's x86-64-v2: each lane through std::fma (exact, a library call), the flush of
+  // the inputs and the result by hand, and NaNs as FMLA gives them (the PC build and the Switch agree bit for bit):
+  // a signalling NaN before a quiet one, the addend before the factors, quieted; 0 x inf with no NaN operand is the
+  // default NaN 0x7FC00000 (as on the 360), where x86 arithmetic would make 0xFFC00000.
+  alignas(16) float x[4], y[4], z[4], r[4];
+  simde_mm_store_ps(x, vmx_flush_ps(a));
+  simde_mm_store_ps(y, vmx_flush_ps(b));
+  simde_mm_store_ps(z, vmx_flush_ps(c));
+  for (int i = 0; i < 4; ++i) {
+    if (std::isnan(x[i]) || std::isnan(y[i]) || std::isnan(z[i])) {
+      const float order[3] = {z[i], x[i], y[i]};
+      float pick = 0.0f;
+      bool found = false;
+      for (float v : order) {
+        if (!found && vmx_is_snan_f32(v)) {
+          pick = v;
+          found = true;
+        }
+      }
+      for (float v : order) {
+        if (!found && std::isnan(v)) {
+          pick = v;
+          found = true;
+        }
+      }
+      r[i] = vmx_quiet_f32(pick);
+      continue;
+    }
+    r[i] = std::fma(x[i], y[i], z[i]);
+    if (std::isnan(r[i])) {
+      const uint32_t default_nan = 0x7FC00000;
+      std::memcpy(&r[i], &default_nan, 4);
+    }
+  }
+  return vmx_flush_ps(simde_mm_load_ps(r));
+#endif
+}
+
+// vexptefp (vmx_expte_range): the estimate of 2^x the code generator computes, `estimate`, with the 360's results
+// outside its range: 0 below -126 (the denormal results flushed; -inf included), +inf from 128 (+inf included), a NaN
+// quieted. Inside the range the estimate is kept.
+inline simde__m128 vmx_expte_range_ps(simde__m128 x, simde__m128 estimate) {
+  simde__m128 r = simde_mm_blendv_ps(estimate, simde_mm_setzero_ps(), simde_mm_cmplt_ps(x, simde_mm_set1_ps(-126.0f)));
+  r = simde_mm_blendv_ps(r, simde_mm_castsi128_ps(simde_mm_set1_epi32(0x7F800000)),
+                         simde_mm_cmpge_ps(x, simde_mm_set1_ps(128.0f)));
+  return simde_mm_blendv_ps(r, vmx_quiet_ps(x), simde_mm_cmpunord_ps(x, x));
+}
+
 }  // namespace rex::ppc
 
 //=============================================================================

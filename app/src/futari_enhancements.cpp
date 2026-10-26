@@ -210,9 +210,6 @@ const Entry kTable[] = {
     {"futari_gpu_identity_remap", kGpu, "vertex shaders skip the per-input remap test when every input keeps its order (sa2-nx)", "true", "false"},
     {"futari_gpu_index_base_held", kGpu, "VS proven not to read the vertex index: r0 from 0, shared block kept across draws (sa2-nx)", "true", "false"},
     {"futari_gpu_pass_narrow_end", kGpu, "render pass end dependency names its consumers: fewer NVK cache invalidations (sa2-nx)", "true", "false"},
-    {"audio_switch_declick", kGpu, "audio: a sound the game cuts or starts mid-wave on a frame edge is faded instead of clicking (Switch)", "true", "false"},
-    {"audio_switch_declick_smooth", kGpu, "audio: that fade over 5.3 ms on a raised cosine, not 1.3 ms linear (crackles)", "true", "false"},
-    {"audio_switch_declick_predict", kGpu, "audio: steps hidden in busy sound caught too (against the slope)", "true", "false"},
     {"futari_gpu_partial_resolve_fresh", kGpu, "a resolve is never written into a stale resolved texture of an earlier board (Black Label Character Select fix)", "true", "false"},
     // Input lag (2026-10-16; docs/futari-notes.md, "Input lag"): each its own key, the probe's "[latency]" line says
     // what they do.
@@ -372,6 +369,11 @@ void Apply() {
     }
     list += e.key;
     active_count += on;
+  }
+  // The Switch driver's output declick (SDK, on by default) is off in Futari whatever a config says (the user, 1.0.3):
+  // the sounds the game cuts fade out where it cuts them now (src/native/futari_sound_fade.cpp, always on).
+  for (const char* key : {"audio_switch_declick", "audio_switch_declick_smooth", "audio_switch_declick_predict"}) {
+    rex::cvar::SetFlagByName(key, "false");
   }
   futari::native::CodegenChecksInit();  // the diagnostic keys of the generated code's self-checks (PC only)
   futari::native::FormsSelfCheck();     // the helpers' instruction forms on this processor (every start)

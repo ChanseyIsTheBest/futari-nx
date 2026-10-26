@@ -95,6 +95,10 @@ set(FUTARI_SOURCES
     src/native/futari_native_frame.cpp
     # Localized copies of the hottest guest functions (tools/localize_native.py -> app/generated/hot).
     src/native/futari_native_hot.cpp
+    # Diagnostic futari_audio_diag: the pacing of the game's XAudio2 (passes, frames, render-driver callbacks).
+    src/native/futari_audio_diag.cpp
+    # A cue the game destroys while it plays fades out first (the Xbox 360 mode crackle; always on, no key).
+    src/native/futari_sound_fade.cpp
     # Stage 2: the native renderer (src/me, masseffect-nx's PM4-ring Vulkan renderer as adapted by banjo-nx). It
     # replaces the emulated Xenos GPU with futari_renderer_native = true; off by default until it draws Futari right.
     src/me/me_native_system.cpp
@@ -594,6 +598,6 @@ if(REXGLUE_PLATFORM_SWITCH)
     rexglue_switch_add_nro(futari
         NAME "Mushihimesama Futari"
         AUTHOR "ChanseyIsTheBest"
-        VERSION "1.0.2"
+        VERSION "1.0.3"
         ICON "${CMAKE_CURRENT_SOURCE_DIR}/futari_icon.jpg")
 endif()

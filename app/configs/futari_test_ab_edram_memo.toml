@@ -135,7 +135,7 @@ masseffect_native_nvk_dynamic = true                      # Renut on NVK: only t
 masseffect_native_nvk_preload = true                      # Renut on NVK: PRFM hints for the pipeline and shaders
 masseffect_native_set4_differences = true                 # Renut on NVK: descriptor set 4 by differences
 
-# ---- Non-CPU enhancements (75) ----
+# ---- Non-CPU enhancements (72) ----
 futari_handheld_gpu_boost = true                          # handheld GPU 460.8 MHz
 futari_native_constants_ubo = true                        # constants from UBOs (Maxwell constant bank)
 futari_gpu_vs_fetch_reorder = true                        # renderer: vertex shaders whose fetches D3D reordered are identified, not dropped (sa2-nx)
@@ -146,9 +146,6 @@ futari_gpu_no_texture_signs = true                        # pixel shaders skip t
 futari_gpu_identity_remap = true                          # vertex shaders skip the per-input remap test when every input keeps its order (sa2-nx)
 futari_gpu_index_base_held = true                         # VS proven not to read the vertex index: r0 from 0, shared block kept across draws (sa2-nx)
 futari_gpu_pass_narrow_end = true                         # render pass end dependency names its consumers: fewer NVK cache invalidations (sa2-nx)
-audio_switch_declick = true                               # audio: a sound the game cuts or starts mid-wave on a frame edge is faded instead of clicking (Switch)
-audio_switch_declick_smooth = true                        # audio: that fade over 5.3 ms on a raised cosine, not 1.3 ms linear (crackles)
-audio_switch_declick_predict = true                       # audio: steps hidden in busy sound caught too (against the slope)
 futari_gpu_partial_resolve_fresh = true                   # a resolve is never written into a stale resolved texture of an earlier board (Black Label Character Select fix)
 futari_late_input = true                                  # input lag: the game reads its controllers as late as its frame allows (adaptive)
 futari_vblank_display_sync = true                         # input lag / judder: the game's vertical blank follows the display's refresh

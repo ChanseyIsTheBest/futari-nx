@@ -153,9 +153,10 @@ PC, including frame by frame over a replay of the game.
   through [mesa-switch](https://github.com/danfromtico/mesa-switch), in the build of
   [nfsmw-nx](https://github.com/StevensND/nfsmw-nx)), with the busiest Direct3D paths replaced by native code. It
   stays in the source; the released NRO no longer links the Vulkan driver (`-DFUTARI_SWITCH_NVK=ON` brings it back).
-- **Audio.** The game's own mixer output goes to the Switch's audio service. The game cuts and restarts sounds on
-  its 256-sample audio frame edges (a sound retriggered every few frames cuts its previous instance); the Switch output
-  smooths those steps so they do not click.
+- **Audio.** The game's own mixer output goes to the Switch's audio service, unchanged. When the game replays a sound
+  on one of its sound channels it destroys the one still playing there, which cut loud sound effects dead and clicked
+  (the crackle of busy Xbox 360 mode play). Since 1.0.3 a sound cut that way fades out over one audio frame (5.3 ms)
+  first, at the point where the game cuts it; before, the output smoothed the clicks afterwards.
 
 ## Documentation
 
