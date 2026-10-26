@@ -73,7 +73,7 @@ MACROS = MARKER + '''
 #define REX_RO_U16(a, v) REX_LOAD_U16(a)
 #define REX_RO_U32(a, v) REX_LOAD_U32(a)
 #define REX_RO_U64(a, v) REX_LOAD_U64(a)
-#elif defined(__SWITCH__)
+#elif defined(__SWITCH__) || defined(REX_RELEASE_FORMS)
 #define REX_RO_U8(a, v) ((u8)(v))
 #define REX_RO_U16(a, v) ((u16)(v))
 #define REX_RO_U32(a, v) ((u32)(v))
@@ -99,7 +99,7 @@ MACROS_V = MARKER_V + '''
 #ifndef REX_RO_V128
 #if defined(REX_RO_CONSTANTS_OFF)
 #define REX_RO_V128(a, hi, lo) REX_BSWAP128(simde_mm_load_si128((simde__m128i*)REX_RAW_ADDR(a)))
-#elif defined(__SWITCH__)
+#elif defined(__SWITCH__) || defined(REX_RELEASE_FORMS)
 #define REX_RO_V128(a, hi, lo) simde_mm_set_epi64x((int64_t)(hi), (int64_t)(lo))
 #else
 [[gnu::always_inline]] static inline simde__m128i RexRoCheckV128(simde__m128i memory, simde__m128i constant,

@@ -286,6 +286,15 @@ public:
   // end without fence copies). Any thread; PresentDone never waits.
   static uint64_t PresentCount();
   static int PresentDone(uint64_t index);
+  // futari-nx (2026-10-26, Linux input latency): VK_KHR_present_wait on the guest's presents, for the guest vblank
+  // locked to the display (src/renut_engine/futari_renut_vblank.cpp; the Switch has the vi vsync event instead).
+  // PresentWaitOn: the swapchain was made with present ids (Vulkan, the device has present wait, not the Switch).
+  // WaitPresentShown: waits until the 'index'-th guest present (PresentCount numbering) has been shown, at most
+  // timeout_ns; 1 shown (*submitted_ns: when Present handed it over, steady clock), 0 not yet, -1 unknown (not one of
+  // the last presents, nothing was presented for it, the swapchain was rebuilt since, or no present wait). Any thread
+  // but the render thread.
+  static bool PresentWaitOn();
+  static int WaitPresentShown(uint64_t index, uint64_t timeout_ns, uint64_t *submitted_ns);
 
   // UI pump: presents just the overlay whenever the guest is not presenting
   // (before it starts, and while it stalls in loads or movie decode), so the

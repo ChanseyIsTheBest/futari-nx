@@ -14,6 +14,11 @@ namespace renut::gpu::detail {
 // (Re)builds swapchain framebuffers and per-image present semaphores.
 bool BuildSwapChainTargets(VideoState &s);
 
+// futari-nx (2026-10-26, present.cpp): whether the swapchain gets present ids for Video::WaitPresentShown (Vulkan with
+// VK_KHR_present_wait, not the Switch, futari_vblank_display_sync), and the end of every wait before shutdown.
+bool PresentWaitWanted(plume::RenderDevice *device);
+void EndPresentWaits();
+
 // Frees everything retired into 'slot' and rewinds its upload ring. Only once
 // the slot's fence has been waited.
 void DrainSlot(VideoState &s, uint32_t slot);

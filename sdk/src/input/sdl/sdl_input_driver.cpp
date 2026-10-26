@@ -10,6 +10,7 @@
  */
 
 #include <array>
+#include <chrono>
 #include <filesystem>
 
 #include <rex/assert.h>
@@ -22,6 +23,18 @@
 
 REXCVAR_DEFINE_STRING(hid_mappings_file, "gamecontrollerdb.txt", "Input",
                       "Path to SDL gamecontroller mappings file");
+// futari-nx (2026-10-26, Linux input latency): GetDeviceState answered from the events of the previous UI-thread pump
+// (QueueControllerUpdate only queues SDL_PumpEvents there and returns at once), so the state a game read was as old as
+// its previous read, about a frame at one read per frame. SDL_UpdateGamepads may be called from any thread
+// (SDL_gamepad.h) and delivers its events to this driver's event watch on the calling thread, which DrainAndLock then
+// applies: the read sees the device as it is now. Reads closer together than input_sdl_sync_poll_us share one update
+// (a game reads every port several times in a row).
+REXCVAR_DEFINE_BOOL(input_sdl_sync_poll, true, "Input",
+                    "Update the gamepads on the reading thread at each read (false: the state of the last UI-thread "
+                    "pump, up to a frame older)");
+REXCVAR_DEFINE_INT32(input_sdl_sync_poll_us, 500, "Input",
+                     "input_sdl_sync_poll: reads closer together than this share one gamepad update")
+    .range(0, 100000);
 
 namespace rex::input::sdl {
 
@@ -197,6 +210,9 @@ X_RESULT SDLInputDriver::GetDeviceState(DeviceId id, X_INPUT_STATE* out_state) {
   auto is_active = this->is_active();
 
   if (is_active) {
+    if (REXCVAR_GET(input_sdl_sync_poll)) {
+      SyncControllerUpdate();
+    }
     QueueControllerUpdate();
   }
 
@@ -666,6 +682,21 @@ void SDLInputDriver::UpdateXCapabilities(ControllerState& state) {
   c.gamepad.thumb_ry = static_cast<int16_t>(0xFFFFu);
   c.vibration.left_motor_speed = 0xFFFFu;
   c.vibration.right_motor_speed = 0xFFFFu;
+}
+
+void SDLInputDriver::SyncControllerUpdate() {
+  const int64_t now = std::chrono::duration_cast<std::chrono::microseconds>(
+                          std::chrono::steady_clock::now().time_since_epoch())
+                          .count();
+  int64_t last = sync_poll_last_us_.load(std::memory_order_relaxed);
+  if (now - last < int64_t(REXCVAR_GET(input_sdl_sync_poll_us))) {
+    return;
+  }
+  // One reader updates; one that loses the race uses the update just made.
+  if (!sync_poll_last_us_.compare_exchange_strong(last, now, std::memory_order_relaxed)) {
+    return;
+  }
+  SDL_UpdateGamepads();
 }
 
 void SDLInputDriver::QueueControllerUpdate() {

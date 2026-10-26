@@ -1,6 +1,10 @@
 {
     "version": 6,
-    "cmakeMinimumRequired": { "major": 3, "minor": 25, "patch": 0 },
+    "cmakeMinimumRequired": {
+        "major": 3,
+        "minor": 25,
+        "patch": 0
+    },
     "configurePresets": [
         {
             "name": "win-pc",
@@ -16,18 +20,81 @@
                 "REXGLUE_ENABLE_TRACY": "OFF",
                 "REXGLUE_USE_VULKAN": "ON"
             },
-            "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Windows" }
+            "condition": {
+                "type": "equals",
+                "lhs": "${hostSystemName}",
+                "rhs": "Windows"
+            }
         },
         {
             "name": "win-pc-debug",
             "displayName": "Windows x64, clang, Debug",
             "inherits": "win-pc",
             "binaryDir": "${sourceDir}/../out/pc-debug",
-            "cacheVariables": { "CMAKE_BUILD_TYPE": "Debug" }
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "Debug"
+            }
+        },
+        {
+            "name": "linux-arm64",
+            "displayName": "Linux AArch64, clang, Release",
+            "generator": "Ninja",
+            "binaryDir": "${sourceDir}/../out/linux-arm64",
+            "cacheVariables": {
+                "CMAKE_C_COMPILER": "clang",
+                "CMAKE_CXX_COMPILER": "clang++",
+                "CMAKE_C_FLAGS": "-march=armv8-a",
+                "CMAKE_CXX_FLAGS": "-march=armv8-a",
+                "CMAKE_BUILD_TYPE": "Release",
+                "REXGLUE_ENABLE_TRACY": "OFF",
+                "REXGLUE_USE_VULKAN": "ON"
+            },
+            "condition": {
+                "type": "equals",
+                "lhs": "${hostSystemName}",
+                "rhs": "Linux"
+            }
+        },
+        {
+            "name": "linux-arm64-relwithdebinfo",
+            "displayName": "Linux AArch64, clang, RelWithDebInfo",
+            "inherits": "linux-arm64",
+            "binaryDir": "${sourceDir}/../out/linux-arm64-rwdi",
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "RelWithDebInfo"
+            }
+        },
+        {
+            "name": "linux-amd64",
+            "displayName": "Linux x86-64, clang, Release",
+            "inherits": "linux-arm64",
+            "binaryDir": "${sourceDir}/../out/linux-amd64",
+            "cacheVariables": {
+                "CMAKE_C_FLAGS": "-march=x86-64-v2",
+                "CMAKE_CXX_FLAGS": "-march=x86-64-v2"
+            }
         }
     ],
     "buildPresets": [
-        { "name": "win-pc", "configurePreset": "win-pc" },
-        { "name": "win-pc-debug", "configurePreset": "win-pc-debug" }
+        {
+            "name": "win-pc",
+            "configurePreset": "win-pc"
+        },
+        {
+            "name": "win-pc-debug",
+            "configurePreset": "win-pc-debug"
+        },
+        {
+            "name": "linux-arm64",
+            "configurePreset": "linux-arm64"
+        },
+        {
+            "name": "linux-arm64-relwithdebinfo",
+            "configurePreset": "linux-arm64-relwithdebinfo"
+        },
+        {
+            "name": "linux-amd64",
+            "configurePreset": "linux-amd64"
+        }
     ]
 }

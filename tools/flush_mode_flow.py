@@ -47,7 +47,7 @@ The localized copies (tools/localize_native.py) are made from these same stateme
 (their original's address is in the sources: unknown at entry), so their call sites are the ones analysed here.
 
 A proven check becomes REX_FLUSH_KNOWN_ON() / REX_FLUSH_KNOWN_OFF(); the macros go into the generated pch:
-  - on the Switch: nothing;
+  - on the Switch, or with REX_RELEASE_FORMS defined (the Linux AArch64 build): nothing;
   - elsewhere (the PC build): the same test as before, and a call to RexFlushFlowMismatch(on) followed by the real
     mode change when the proof was wrong. Every PC run is therefore a check of the proof, at the old cost; the
     checks it executes are counted in g_rex_flush_flow_checked (a plain lossy counter: "at least this many");
@@ -97,7 +97,7 @@ MACROS = MARKER + '''
 #if defined(REX_FLUSH_FLOW_OFF)
 #define REX_FLUSH_KNOWN_ON() ctx.fpscr.enableFlushMode()
 #define REX_FLUSH_KNOWN_OFF() ctx.fpscr.disableFlushMode()
-#elif defined(__SWITCH__)
+#elif defined(__SWITCH__) || defined(REX_RELEASE_FORMS)
 #define REX_FLUSH_KNOWN_ON() ((void)0)
 #define REX_FLUSH_KNOWN_OFF() ((void)0)
 #else

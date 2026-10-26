@@ -165,6 +165,7 @@ PC, including frame by frame over a replay of the game.
 | Document | What it explains |
 | --- | --- |
 | [docs/building.md](docs/building.md) | How to build the PC test build, the NRO, the shader package and the SD folder |
+| [docs/building-linux.md](docs/building-linux.md) | How to build and run the Linux version (AArch64; x86-64 too) |
 | [docs/futari-notes.md](docs/futari-notes.md) | The port step by step: findings in the game's code, every optimisation and how it was checked |
 | [docs/research/](docs/research/) | Research notes and comparisons with the sibling ports |
 
@@ -176,6 +177,9 @@ Windows, LLVM clang 20 and the VS 2022 Build Tools for the PC build; devkitA64, 
 [devkitPro](https://devkitpro.org) for the Switch (NVK from [mesa-switch](https://github.com/danfromtico/mesa-switch)
 only for 1.0.0's renderer); Python; and your own copy of the game for the code generator and the shaders. The whole process is in
 [docs/building.md](docs/building.md).
+
+Linux (AArch64 handhelds and boards, also x86-64) builds natively with clang, CMake and DXC: `tools/linux/build.sh`, in
+[docs/building-linux.md](docs/building-linux.md).
 
 <div align="center">
 

@@ -53,7 +53,7 @@ MACROS = MARKER + '''
 #endif
 #endif
 #ifndef REX_CALL_INDIRECT_FUNC_AT
-#if defined(__SWITCH__) || defined(REX_INDIRECT_CENSUS_OFF)
+#if defined(__SWITCH__) || defined(REX_RELEASE_FORMS) || defined(REX_INDIRECT_CENSUS_OFF)
 #define REX_CALL_INDIRECT_FUNC_AT(function, site, x) REX_CALL_INDIRECT_FUNC(x)
 #define REX_PROMOTED_CALL(target, function) ((void)0)
 #else

@@ -66,8 +66,21 @@ set_target_properties(renut_smolv PROPERTIES POSITION_INDEPENDENT_CODE ON)
 # DXC: the copy vendored with XenosRecomp covers Windows and Linux.
 # ---------------------------------------------------------------------------
 set(RENUT_DXC_BIN_DIR "${RENUT_XENOS_RECOMP_DIR}/thirdparty/dxc-bin/bin/x64")
-if(CMAKE_HOST_WIN32)
+# futari-nx (Linux AArch64, 2026-10-26): dxc-bin has no Linux AArch64 binary, so there the distribution's DXC is used
+# (Arch Linux ARM's directx-shader-compiler, or one built from github.com/microsoft/DirectXShaderCompiler): dxc on the
+# PATH, or FUTARI_DXC. Its libdxcompiler is what Renut's XenosRecomp links (thirdparty/dxc-bin/CMakeLists.txt). The
+# SPIR-V it writes is the same on every host; a different DXC version can number its values differently.
+set(FUTARI_DXC "" CACHE FILEPATH "DXC for the host shaders (empty: XenosRecomp's dxc-bin, or dxc on the PATH on Linux AArch64)")
+if(FUTARI_DXC)
+    set(RENUT_DXC "${FUTARI_DXC}")
+elseif(CMAKE_HOST_WIN32)
     set(RENUT_DXC "${RENUT_DXC_BIN_DIR}/dxc.exe")
+elseif(CMAKE_HOST_SYSTEM_PROCESSOR MATCHES "^(aarch64|arm64|ARM64)$" AND NOT CMAKE_HOST_APPLE)
+    find_program(FUTARI_SYSTEM_DXC NAMES dxc)
+    if(NOT FUTARI_SYSTEM_DXC)
+        message(FATAL_ERROR "No dxc on the PATH: install DirectXShaderCompiler (docs/building-linux.md) or set FUTARI_DXC")
+    endif()
+    set(RENUT_DXC "${FUTARI_SYSTEM_DXC}")
 else()
     # The Linux binary finds libdxcompiler next to it.
     set(RENUT_DXC env "LD_LIBRARY_PATH=${RENUT_XENOS_RECOMP_DIR}/thirdparty/dxc-bin/lib/x64" "${RENUT_DXC_BIN_DIR}/dxc-linux")

@@ -55,7 +55,7 @@ MACROS = MARKER + '''
 #define REX_RO_CFG_U32(a, v, load) (load)
 #define REX_RO_CFG_U64(a, v, load) (load)
 #define REX_RO_CFG_F32(a, v, load) (load)
-#elif defined(__SWITCH__)
+#elif defined(__SWITCH__) || defined(REX_RELEASE_FORMS)
 #define REX_RO_CFG_U8(a, v, load) ((u8)(v))
 #define REX_RO_CFG_U16(a, v, load) ((u16)(v))
 #define REX_RO_CFG_U32(a, v, load) ((u32)(v))

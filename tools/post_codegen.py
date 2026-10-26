@@ -162,7 +162,7 @@ def main():
     for t in trees:
         if not os.path.isfile(images[t]):
             sys.exit(f'post_codegen: {images[t]} is missing (the image dump of the code generator): run '
-                     'tools\\codegen.ps1 -Perf once, it writes it (REXGLUE_DUMP_IMAGE)')
+                     'tools\\codegen.ps1 -Perf (Linux: tools/linux/codegen.sh --perf) once, it writes it (REXGLUE_DUMP_IMAGE)')
         if t not in xex or not os.path.isfile(xex[t]):
             sys.exit(f'post_codegen: no XEX file for {t} (app/futari_manifest.toml names {xex.get(t)})')
         if os.path.getmtime(xex[t]) > os.path.getmtime(images[t]):
@@ -280,13 +280,17 @@ def keep_times(folders):
     for folder in folders:
         dep = os.path.join(folder, 'codegen.d')
         if os.path.isfile(dep):
-            for m in re.finditer(r'([A-Za-z]:/[^\s\\]+(?:\\ [^\s\\]+)*)', open(dep, encoding='utf-8').read()):
+            # Windows paths (C:/...) and, on Linux, absolute POSIX ones.
+            for m in re.finditer(r'((?:[A-Za-z]:)?/[^\s\\]+(?:\\ [^\s\\]+)*)', open(dep, encoding='utf-8').read()):
                 path = m.group(1).replace('\\ ', ' ')
                 if os.path.normcase(os.path.abspath(path)) != os.path.normcase(manifest) and \
                         not path.endswith(('codegen.build.stamp', ':')):
                     inputs.add(path)
     for exe in ('rexglue.exe', 'rexgluerd.exe', 'rexglued.exe'):
         inputs.add(os.path.join(ROOT, 'sdk', 'out', 'win-amd64', exe))
+    for platform in ('linux-arm64', 'linux-amd64'):
+        for exe in ('rexglue', 'rexgluerd', 'rexglued'):
+            inputs.add(os.path.join(ROOT, 'sdk', 'out', platform, exe))
     floor = max([os.stat(p).st_mtime_ns for p in inputs if os.path.isfile(p)] or [0])
     for folder in folders:
         if not os.path.isdir(folder):

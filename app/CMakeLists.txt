@@ -8,9 +8,37 @@
 # Stage 2, Nintendo Switch (devkitA64), later:
 #   cmake -S app -B out/nx -G Ninja -DCMAKE_BUILD_TYPE=Release \
 #     -DCMAKE_TOOLCHAIN_FILE=tools/switch/cmake/switch-devkitA64.cmake -DREXGLUE_SWITCH_NVK_SDK=<mesa sdk>
+# Linux (AArch64, also x86-64), native build on the machine that runs it (docs/building-linux.md):
+#   cmake --preset linux-arm64 -S app && cmake --build out/linux-arm64
 
 cmake_minimum_required(VERSION 3.25)
 project(futari LANGUAGES CXX)
+
+# Linux AArch64 (2026-10-26): the PC build's layout (the SDK's SDL3 + Vulkan platform layer, the game cores as shared
+# libraries next to the executable, Renut on plume's Vulkan back end) with the Switch build's AArch64 code. The NEON
+# forms of the generated code (rex/ppc/intrinsics.h, tools/vec_byteswap.py, tools/guest_cas.py,
+# tools/pch_neon_shuffles.py) test __aarch64__, so they apply here as they are.
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_SYSTEM_PROCESSOR MATCHES "^(aarch64|arm64|ARM64)$")
+    set(FUTARI_LINUX_ARM64 ON)
+else()
+    set(FUTARI_LINUX_ARM64 OFF)
+endif()
+# The proofs of the post-codegen steps (flush-mode flow, read-only constants, the r1 mirror, link-register write-backs,
+# promoted indirect calls) compile to nothing on the Switch and to self-checks on the PC, which is where they were
+# verified. ON gives a non-Switch build the Switch's forms (REX_RELEASE_FORMS in the generated pch); OFF keeps the
+# PC's checked forms, for a test session. The generated pch takes the macros at codegen: regenerate after a change.
+option(FUTARI_RELEASE_FORMS "Non-Switch builds: the post-codegen steps' Switch forms, without the PC self-checks"
+       ${FUTARI_LINUX_ARM64})
+# GCC's AArch64 early register allocation (-mearly-ra, GCC 15 and later): the same miscompile rule as the Switch's
+# below, for a Linux AArch64 build made with GCC. Clang (the presets) has no such pass.
+if(FUTARI_LINUX_ARM64 AND CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+    include(CheckCXXCompilerFlag)
+    check_cxx_compiler_flag(-mearly-ra=none FUTARI_HAVE_EARLY_RA_FLAG)
+    if(FUTARI_HAVE_EARLY_RA_FLAG)
+        add_compile_options(-mearly-ra=none)
+        add_link_options(-mearly-ra=none)
+    endif()
+endif()
 
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -143,8 +171,16 @@ endif()
 # SPIR-V initializers of the native renderer's EDRAM transfer / utility shaders (src/me/futari/shaders), compiled
 # on the host with glslangValidator (tools/win/build_glslang.ps1 builds it from the SDK's glslang). The Switch build
 # uses the same host tool: SPIR-V is platform independent.
-set(FUTARI_GLSLANG_VALIDATOR "${CMAKE_CURRENT_SOURCE_DIR}/../out/glslang/StandAlone/glslangValidator${CMAKE_EXECUTABLE_SUFFIX}"
-    CACHE FILEPATH "Host glslangValidator")
+set(_futari_glslang_default "${CMAKE_CURRENT_SOURCE_DIR}/../out/glslang/StandAlone/glslangValidator${CMAKE_EXECUTABLE_SUFFIX}")
+if(NOT EXISTS "${_futari_glslang_default}" AND CMAKE_HOST_UNIX)
+    # Linux: the distribution's glslang package (glslangValidator on the PATH) when tools/win/build_glslang.ps1's
+    # build is not there.
+    find_program(_futari_glslang_system NAMES glslangValidator glslang)
+    if(_futari_glslang_system)
+        set(_futari_glslang_default "${_futari_glslang_system}")
+    endif()
+endif()
+set(FUTARI_GLSLANG_VALIDATOR "${_futari_glslang_default}" CACHE FILEPATH "Host glslangValidator")
 set(FUTARI_GENERATED_SHADER_DIR "${CMAKE_CURRENT_BINARY_DIR}/generated-shaders")
 set(FUTARI_EDRAM_SHADER_INCLUDES)
 foreach(_shader futari_edram_7e3_to_rgba8 futari_edram_rgba8_to_7e3 futari_edram_16f_to_16f me_resolve_exp_bias me_edram_depth_to_rgba8 me_edram_depth_to_16f me_edram_import me_edram_color_to_depth me_edram_depth_to_depth me_edram_depth_to_stencil me_edram_color_to_stencil me_edram_depth_to_depth_msaa2 me_edram_depth_msaa2_to_depth_1x me_edram_depth_to_stencil_msaa2 me_edram_depth_msaa2_to_stencil_1x me_edram_raw64_to_rgba8 me_edram_rgba8_to_raw64 me_edram_raw64_to_16f me_edram_16f_to_raw64 me_edram_raw64_to_raw64 me_edram_depth_to_raw64 me_edram_raw64_to_depth me_depth_resolve_guestspace me_depth_resolve_guestspace_msaa2 me_edram_stencil_to_buffer me_edram_stencil_msaa2_to_buffer me_edram_color_stencil_to_buffer me_edram_color_to_color me_edram_r64_to_r64 futari_resolve_copy)
@@ -197,9 +233,15 @@ foreach(_dep xxhash renderdoc)
 endforeach()
 
 # Settings template next to the executable, only when there is none yet (the copy there is the user's to edit).
+# Linux: app/futari_linux.toml, the player's settings (Renut on Vulkan); the PC's futari.toml is a test configuration.
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    set(_futari_settings_template "${CMAKE_CURRENT_SOURCE_DIR}/futari_linux.toml")
+else()
+    set(_futari_settings_template "${CMAKE_CURRENT_SOURCE_DIR}/futari.toml")
+endif()
 if(NOT REXGLUE_PLATFORM_SWITCH)
     add_custom_command(TARGET futari POST_BUILD
-        COMMAND "${CMAKE_COMMAND}" -DSRC=${CMAKE_CURRENT_SOURCE_DIR}/futari.toml -DDST=$<TARGET_FILE_DIR:futari>/futari.toml
+        COMMAND "${CMAKE_COMMAND}" -DSRC=${_futari_settings_template} -DDST=$<TARGET_FILE_DIR:futari>/futari.toml
                 -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/copy_if_missing.cmake"
         VERBATIM)
 endif()
@@ -338,13 +380,13 @@ if(NOT FUTARI_GEN_FLUSH_HOIST)
 endif()
 if(NOT FUTARI_GEN_LR_WRITE_SAME)
     list(APPEND _futari_gen_definitions REX_LR_WRITE_SAME_OFF)
-elseif(NOT REXGLUE_PLATFORM_SWITCH)
+elseif(NOT REXGLUE_PLATFORM_SWITCH AND NOT FUTARI_RELEASE_FORMS)
     # The PC build compares every proven write-back with the value ctx.lr holds ([verify] self-checks line).
     list(APPEND _futari_gen_definitions REX_LR_WRITE_SAME_CHECK)
 endif()
 if(NOT FUTARI_GEN_R1_LOCAL)
     list(APPEND _futari_gen_definitions REX_R1_LOCAL_OFF)
-elseif(NOT REXGLUE_PLATFORM_SWITCH)
+elseif(NOT REXGLUE_PLATFORM_SWITCH AND NOT FUTARI_RELEASE_FORMS)
     # The PC build compares the mirror with ctx.r1 after every kept or assumed call ([verify] self-checks line).
     list(APPEND _futari_gen_definitions REX_R1_CHECK)
 endif()
@@ -353,6 +395,9 @@ if(NOT FUTARI_GEN_VSEL_NEON)
 endif()
 if(NOT FUTARI_GEN_INLINE_LEAVES)
     list(APPEND _futari_gen_definitions REX_INLINE_LEAVES_OFF)
+endif()
+if(FUTARI_RELEASE_FORMS AND NOT REXGLUE_PLATFORM_SWITCH)
+    list(APPEND _futari_gen_definitions REX_RELEASE_FORMS)
 endif()
 # The game code, the eight game cores and the app (whose localized copies are the same generated statements).
 foreach(target futari futari_recomp
@@ -600,4 +645,38 @@ if(REXGLUE_PLATFORM_SWITCH)
         AUTHOR "ChanseyIsTheBest"
         VERSION "1.0.3"
         ICON "${CMAKE_CURRENT_SOURCE_DIR}/futari_icon.jpg")
+endif()
+
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    # The game cores are shared libraries here, as they are DLLs on Windows. Their side of the native framework, the
+    # renderers and the census (src/native/futari_native_core.cpp, src/renut_engine/futari_renut_core.h) calls the
+    # executable's Futari* entries by name, which on Windows are found with GetProcAddress and here by the dynamic
+    # linker at load: the executable exports them (only them: its generated sub_X stay local).
+    target_link_options(futari PRIVATE "LINKER:--export-dynamic-symbol=Futari*")
+    # The executable's RPATH is $ORIGIN (the SDK's rexglue_configure_target), which copies only the GPU plugin next to
+    # it on Linux: the runtime library goes there too, so the build folder runs as it is.
+    if(TARGET rexruntime)
+        add_custom_command(TARGET futari POST_BUILD
+            COMMAND "${CMAKE_COMMAND}" -E copy_if_different $<TARGET_FILE:rexruntime> $<TARGET_FILE_DIR:futari>
+            VERBATIM)
+    endif()
+endif()
+
+if(FUTARI_LINUX_ARM64)
+    # The Switch's CPU round 1 rule (above) for Linux AArch64: the game code without the x29 frame chain, which frees
+    # a callee-saved register the recompiled code is short of. The SDK and the app keep theirs. The other round 1
+    # steps need nothing here: their AArch64 forms are chosen by __aarch64__ in the generated code.
+    option(FUTARI_ARM64_OMIT_FRAME_POINTER "Linux AArch64: game code without the x29 frame chain" ON)
+    if(FUTARI_ARM64_OMIT_FRAME_POINTER)
+        foreach(target futari_recomp
+                futari_palm_normal futari_palm_abnormal futari_reco_normal futari_reco_abnormal
+                futari_hirow_normal futari_hirow_abnormal futari_kiniro_normal futari_kiniro_abnormal)
+            if(TARGET ${target})
+                target_compile_options(${target} PRIVATE -fomit-frame-pointer)
+            endif()
+        endforeach()
+        set_property(SOURCE src/native/futari_native_hot.cpp APPEND PROPERTY COMPILE_OPTIONS -fomit-frame-pointer)
+    endif()
+    message(STATUS "futari: Linux AArch64: release forms ${FUTARI_RELEASE_FORMS}, omit frame pointer "
+                   "${FUTARI_ARM64_OMIT_FRAME_POINTER}")
 endif()

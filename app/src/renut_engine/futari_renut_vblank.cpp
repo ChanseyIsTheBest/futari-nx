@@ -39,6 +39,8 @@
 #endif
 #include <windows.h>
 #endif
+#include <cmath>
+#include <mutex>
 #include <thread>
 
 #include "native/futari_native.h"
@@ -195,6 +197,214 @@ bool FromDisplay() {
 }
 #endif
 
+#if !REX_PLATFORM_SWITCH
+// futari-nx (2026-10-26, Linux input latency): the Switch's display-synced vblank (FromDisplay above) for a Vulkan
+// renderer elsewhere. There is no vsync event to wait for, so the refreshes are found from when the guest's images
+// were shown: VK_KHR_present_wait (Video::WaitPresentShown) says when each present reached the screen, a refresh
+// boundary give or take the compositor's wake-up. From those times a second thread keeps the display's period and
+// phase; this thread runs the guest's vblank on that grid, every m-th refresh for a display at m x 60 Hz (a display
+// that is no whole multiple of 60 Hz keeps the timer). futari_vblank_phase_auto as on the Switch: an image shown a
+// refresh later than the best of the recent ones moves the vblank 2 ms earlier (and caps it there for 5 minutes);
+// 3 s of images on time move it 0.25 ms later, up to futari_vblank_phase_max_us.
+struct DisplayGrid {
+  std::mutex mutex;
+  double period_ns = 0;     // the display's refresh period
+  double anchor_ns = 0;     // a refresh (steady clock)
+  uint64_t samples = 0;
+  uint64_t last_sample_ns = 0;
+  // futari_vblank_phase_auto: refreshes from submission to display, per image; the best of the recent ones.
+  int64_t best_refreshes = -1;
+  uint64_t best_since_ns = 0;
+  uint64_t late_images = 0;   // shown a refresh later than the best (since the last read)
+  uint64_t on_time = 0;       // shown at the best (since the last read)
+};
+
+uint64_t SteadyNs() {
+  return uint64_t(std::chrono::duration_cast<std::chrono::nanoseconds>(
+                      std::chrono::steady_clock::now().time_since_epoch())
+                      .count());
+}
+
+// The refresh of the grid nearest to t.
+double NearestRefresh(const DisplayGrid& g, double t) {
+  return g.anchor_ns + std::round((t - g.anchor_ns) / g.period_ns) * g.period_ns;
+}
+
+// The second thread: waits for each newest guest present to be shown and moves the grid.
+void ObservePresents(DisplayGrid* grid, double nominal_ns, const std::atomic<bool>* run) {
+  uint64_t done = 0;
+  while (run->load(std::memory_order_acquire) && g_running.load(std::memory_order_acquire)) {
+    const uint64_t newest = renut::gpu::Video::PresentCount();
+    if (newest == done) {
+      std::this_thread::sleep_for(std::chrono::microseconds(500));
+      continue;
+    }
+    uint64_t submitted = 0;
+    const int shown = renut::gpu::Video::WaitPresentShown(newest, 50000000ull, &submitted);
+    if (shown == 0) continue;  // not yet: wait for the same one (or a newer one) again
+    done = newest;
+    if (shown < 0) continue;
+    const double t = double(SteadyNs());
+    std::lock_guard lock(grid->mutex);
+    DisplayGrid& g = *grid;
+    if (!g.samples) {
+      g.period_ns = nominal_ns;
+      g.anchor_ns = t;
+    } else {
+      const double since = t - g.anchor_ns;
+      const double refreshes = std::max(1.0, std::round(since / g.period_ns));
+      const double expected = g.anchor_ns + refreshes * g.period_ns;
+      const double error = t - expected;
+      if (std::fabs(error) < 0.25 * g.period_ns) {
+        // Small steps: the times carry the compositor's and this thread's wake-up jitter.
+        if (refreshes <= 8) g.period_ns += 0.05 * error / refreshes;
+        g.anchor_ns = expected + 0.2 * error;
+      } else {
+        g.anchor_ns = t;  // a jump (mode change, a long stall): start the phase again from here
+      }
+    }
+    ++g.samples;
+    g.last_sample_ns = uint64_t(t);
+    // Refreshes from the image's present call to the refresh it was shown at.
+    if (submitted && g.samples > 60) {
+      const double first = NearestRefresh(g, double(submitted)) <= double(submitted)
+                               ? NearestRefresh(g, double(submitted)) + g.period_ns
+                               : NearestRefresh(g, double(submitted));
+      const int64_t refreshes = std::max<int64_t>(0, int64_t(std::llround((NearestRefresh(g, t) - first) / g.period_ns)));
+      const uint64_t now = uint64_t(t);
+      if (g.best_refreshes < 0 || refreshes < g.best_refreshes || now - g.best_since_ns > 300000000000ull) {
+        g.best_refreshes = refreshes;
+        g.best_since_ns = now;
+      }
+      if (refreshes > g.best_refreshes)
+        ++g.late_images;
+      else
+        ++g.on_time;
+    }
+  }
+}
+
+// False when the vblank cannot follow the display (no present wait, a display that is no multiple of the game's
+// rate): the timer runs then.
+bool FromPresents(double nominal_ns) {
+  if (!REXCVAR_GET(futari_vblank_display_sync) || rex::kernel::xboxkrnl::VblankPerSwap()) return false;
+  // The renderer's swapchain may not exist yet: the timer's vblanks until it does, for at most 10 s.
+  const uint64_t give_up = SteadyNs() + 10000000000ull;
+  uint64_t next_timer = SteadyNs() + uint64_t(nominal_ns);
+  while (!renut::gpu::Video::PresentWaitOn()) {
+    if (!g_running.load(std::memory_order_acquire) || SteadyNs() > give_up) return false;
+    if (SteadyNs() >= next_timer) {
+      Vblank();
+      next_timer += uint64_t(nominal_ns);
+    }
+    rex::thread::Sleep(std::chrono::microseconds(500));
+  }
+  DisplayGrid grid;
+  std::atomic<bool> observe{true};
+  std::thread observer(ObservePresents, &grid, nominal_ns, &observe);
+  // Learning the grid: the timer's vblanks while the first images are shown (the game presents once per vblank).
+  const uint64_t learn_until = SteadyNs() + 2000000000ull;
+  while (g_running.load(std::memory_order_acquire)) {
+    const uint64_t now = SteadyNs();
+    {
+      std::lock_guard lock(grid.mutex);
+      if (now > learn_until && grid.samples >= 90) break;
+    }
+    if (now >= next_timer) {
+      Vblank();
+      next_timer += uint64_t(nominal_ns);
+      if (now > next_timer + 250000000ull) next_timer = now + uint64_t(nominal_ns);
+    }
+    rex::thread::Sleep(std::chrono::microseconds(300));
+    if (now > learn_until + 8000000000ull) break;  // no images for 10 s (a long load): decide with what there is
+  }
+  double period = 0;
+  {
+    std::lock_guard lock(grid.mutex);
+    period = grid.samples >= 90 ? grid.period_ns : 0;
+  }
+  const double ratio = period > 0 ? nominal_ns / period : 0;
+  const double multiple = std::round(ratio);
+  if (!g_running.load(std::memory_order_acquire) || multiple < 1 || std::fabs(ratio - multiple) > 0.01 * multiple) {
+    REXLOG_INFO("[renut] vblank: the display's refresh {} (futari_vblank_display_sync): the {:.2f} Hz timer stays",
+                period > 0 ? fmt::format("is {:.3f} Hz, no whole multiple of the game's", 1e9 / period)
+                           : std::string("could not be measured from the presents"),
+                1e9 / nominal_ns);
+    observe.store(false, std::memory_order_release);
+    observer.join();
+    return false;
+  }
+  const int64_t every = int64_t(multiple);
+  const bool phase_auto = REXCVAR_GET(futari_vblank_phase_auto);
+  const int64_t phase_max_us = REXCVAR_GET(futari_vblank_phase_max_us);
+  int64_t delay_us = phase_auto ? 0 : REXCVAR_GET(futari_vblank_delay_us);
+  int64_t ceiling_us = phase_max_us;
+  uint64_t ceiling_until = 0;
+  uint64_t good = 0, late_total = 0, report = 0;
+  REXLOG_INFO("[renut] vblank: the game's vertical blank follows the display's refresh ({:.3f} Hz, every {} "
+              "refresh{}, from the presents: futari_vblank_display_sync), {}",
+              1e9 / period, every, every == 1 ? "" : "es",
+              phase_auto ? fmt::format("its phase found by measurement, at most {} us after it", phase_max_us)
+                         : fmt::format("{} us after it", delay_us));
+  double last_refresh = 0;
+  while (g_running.load(std::memory_order_acquire)) {
+    double target;
+    uint64_t late = 0, on_time = 0;
+    {
+      std::lock_guard lock(grid.mutex);
+      const double now = double(SteadyNs());
+      double refresh = last_refresh > 0 ? NearestRefresh(grid, last_refresh + double(every) * grid.period_ns)
+                                        : NearestRefresh(grid, now) + grid.period_ns;
+      // Behind (a stall of this thread): the next refresh of the grid from now, keeping the step.
+      while (refresh + double(delay_us) * 1000.0 < now - 0.5 * grid.period_ns) refresh += double(every) * grid.period_ns;
+      if (refresh - now > 4.0 * nominal_ns) refresh = NearestRefresh(grid, now) + grid.period_ns;  // the grid jumped
+      last_refresh = refresh;
+      target = refresh + double(delay_us) * 1000.0;
+      late = grid.late_images;
+      on_time = grid.on_time;
+      grid.late_images = 0;
+      grid.on_time = 0;
+    }
+    if (phase_auto) {
+      const uint64_t now = SteadyNs();
+      if (ceiling_until && now > ceiling_until) {
+        ceiling_us = phase_max_us;
+        ceiling_until = 0;
+      }
+      if (late) {
+        late_total += late;
+        ceiling_us = std::max<int64_t>(delay_us - 2000, 0);
+        ceiling_until = now + 300000000000ull;
+        delay_us = ceiling_us;
+        good = 0;
+      } else if (on_time && (good += on_time) >= 180) {
+        good = 0;
+        delay_us = std::min<int64_t>(delay_us + 250, ceiling_us);
+      }
+      if (++report >= 600) {  // every 10 s at 60 Hz
+        report = 0;
+        REXLOG_INFO("[latency] guest vblank {:.2f} ms after the display's refresh (futari_vblank_phase_auto, from the "
+                    "presents), ceiling {:.2f} ms, {} images shown a refresh late in all",
+                    double(delay_us) / 1000.0, double(ceiling_us) / 1000.0, late_total);
+      }
+    }
+    // Sleep to 0.5 ms before the vblank, then yield to it.
+    for (;;) {
+      const double left = target - double(SteadyNs());
+      if (left <= 0) break;
+      if (left > 700000.0)
+        rex::thread::Sleep(std::chrono::microseconds(int64_t((left - 500000.0) / 1000.0)));
+      else
+        std::this_thread::yield();
+    }
+    Vblank();
+  }
+  observe.store(false, std::memory_order_release);
+  observer.join();
+  return true;
+}
+#endif
+
 int Loop() {
 #if REX_PLATFORM_SWITCH
   // futari_renut_vblank_core (above): for the display's refresh and the timer alike.
@@ -214,6 +424,10 @@ int Loop() {
   const auto interval = std::chrono::duration_cast<Clock::duration>(std::chrono::duration<double>(1.0 / hz));
   auto next = Clock::now() + interval;
   uint64_t last_swap = rex::kernel::xboxkrnl::GuestSwapCount();
+#if !REX_PLATFORM_SWITCH
+  if (FromPresents(1e9 / hz)) return 0;
+  next = Clock::now() + interval;
+#endif
   REXLOG_INFO("[renut] vblank: a {:.2f} Hz timer{}", hz,
               rex::kernel::xboxkrnl::VblankPerSwap() ? " (vblank_per_swap: one per Swap)" : "");
 #if defined(_WIN32)

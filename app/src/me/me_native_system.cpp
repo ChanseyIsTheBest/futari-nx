@@ -94,8 +94,9 @@ REXCVAR_DEFINE_BOOL(futari_vblank_sleep_exact, true, "Futari",
 // (and every so often a frame was shown twice or not at all). With this, on the Switch, the guest's vblank IS the
 // display's (the vi vsync event): every frame starts at a refresh and is ready for the next one.
 REXCVAR_DEFINE_BOOL(futari_vblank_display_sync, true, "Futari",
-                    "Switch: the game's vertical blank follows the display's own refresh (vi vsync event) instead "
-                    "of a 60 Hz timer of its own (input lag, judder); false = the timer")
+                    "The game's vertical blank follows the display's own refresh (Switch: the vi vsync event; "
+                    "Vulkan elsewhere: when the presents are shown, VK_KHR_present_wait) instead of a 60 Hz timer of "
+                    "its own (input lag, judder); false = the timer")
     .lifecycle(rex::cvar::Lifecycle::kInitOnly);
 // RetroArch's "frame delay": with the vblank locked to the display, start the frame this long after the refresh. The
 // game then reads the controller that much later and the image still makes the next refresh, as long as the frame's
@@ -106,7 +107,7 @@ REXCVAR_DEFINE_INT32(futari_diag_latency_trace_s, 0, "Futari",
                      "rex/frame_latency.h). 0 = off")
     .lifecycle(rex::cvar::Lifecycle::kInitOnly);
 REXCVAR_DEFINE_INT32(futari_vblank_delay_us, 0, "Futari",
-                     "Switch, with futari_vblank_display_sync and futari_vblank_phase_auto off: the game's vertical "
+                     "With futari_vblank_display_sync and futari_vblank_phase_auto off: the game's vertical "
                      "blank comes this many microseconds after the display's refresh (0 = at the refresh)")
     .range(0, 12000)
     .lifecycle(rex::cvar::Lifecycle::kInitOnly);
@@ -117,7 +118,7 @@ REXCVAR_DEFINE_INT32(futari_vblank_delay_us, 0, "Futari",
 // refresh); an image that was not makes it 2 ms earlier and caps it there for 5 minutes. The "[latency]" line has the
 // phase and the misses.
 REXCVAR_DEFINE_BOOL(futari_vblank_phase_auto, true, "Futari",
-                    "Switch, with futari_vblank_display_sync: find the latest guest vblank after the display's refresh "
+                    "With futari_vblank_display_sync: find the latest guest vblank after the display's refresh "
                     "at which the image is still finished for the next refresh (less input lag); false = "
                     "futari_vblank_delay_us")
     .lifecycle(rex::cvar::Lifecycle::kInitOnly);

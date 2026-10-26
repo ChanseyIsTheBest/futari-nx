@@ -28,8 +28,13 @@ set(RENUT_ASSETS_DIR "${CMAKE_SOURCE_DIR}/../assets/game_root" CACHE PATH "Game 
 # Renut's XenosRecomp is built as an ExternalProject (gpu.cmake): it gets this build's whole host toolchain, not only
 # the compiler paths. On the PC, clang for the MSVC ABI.
 set(BANJO_RENUT_XENOS_RECOMP_ARGS "")
+if(FUTARI_DXC AND NOT DXC_SYSTEM_TOOL)
+    set(DXC_SYSTEM_TOOL "${FUTARI_DXC}")  # the DXC of the host shaders (gpu.cmake) for XenosRecomp too
+endif()
+# DXC_SYSTEM_TOOL / DXC_SYSTEM_LIB: a DirectXShaderCompiler outside the PATH and the library folders, for Linux AArch64
+# (thirdparty/reblue-XenosRecomp/thirdparty/dxc-bin/CMakeLists.txt; docs/building-linux.md).
 foreach(_futari_var CMAKE_C_COMPILER_TARGET CMAKE_CXX_COMPILER_TARGET CMAKE_LINKER_TYPE CMAKE_C_FLAGS CMAKE_CXX_FLAGS
-                    CMAKE_AR CMAKE_RC_COMPILER CMAKE_MT CMAKE_MAKE_PROGRAM)
+                    CMAKE_AR CMAKE_RC_COMPILER CMAKE_MT CMAKE_MAKE_PROGRAM DXC_SYSTEM_TOOL DXC_SYSTEM_LIB)
     if(DEFINED ${_futari_var} AND NOT "${${_futari_var}}" STREQUAL "")
         list(APPEND BANJO_RENUT_XENOS_RECOMP_ARGS "-D${_futari_var}=${${_futari_var}}")
     endif()

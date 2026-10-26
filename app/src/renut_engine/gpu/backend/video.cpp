@@ -931,7 +931,10 @@ bool Video::CreateHostDevice() {
   const uint32_t swap_images = REXCVAR_GET(futari_renut_double_buffer) ? 2u : kFramesInFlight + 1;
   RGPU_INFO("Swapchain: {} images (futari_renut_double_buffer {})", swap_images,
             REXCVAR_GET(futari_renut_double_buffer) ? "on" : "off");
-  plume::RenderSwapChainDesc swap_desc(render_window, kSwapChainFormat, swap_images, false, kFramesInFlight);
+  // futari-nx (2026-10-26): present ids for the display-locked guest vblank (Video::WaitPresentShown) where the
+  // device can wait for them. plume numbers every present then; nothing waits on the render thread.
+  const bool present_wait = detail::PresentWaitWanted(s.device.get());
+  plume::RenderSwapChainDesc swap_desc(render_window, kSwapChainFormat, swap_images, present_wait, kFramesInFlight);
   s.swap_chain = s.queue->createSwapChain(swap_desc);
   // plume's Vulkan swapchain is created lazily by resize().
   if (s.swap_chain && IsVulkan())
@@ -976,6 +979,7 @@ bool Video::HostReady() {
 void Video::BeginShutdown() {
   auto &s = State();
   s.shutting_down.store(true, std::memory_order_release);
+  detail::EndPresentWaits();  // futari-nx: no vkWaitForPresentKHR once the swapchain may go
   StopPipelinePrebuild();
   render_thread::Stop();
   std::lock_guard lock(s.mutex);

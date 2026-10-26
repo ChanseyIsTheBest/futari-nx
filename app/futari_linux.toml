@@ -1,0 +1,15 @@
+# Mushihimesama Futari (Linux) - your settings. The build copies this file next to the executable when there is none
+# there yet; edit the copy. Any cvar can also be given on the command line (--name=value) or as REX_<NAME>.
+# Every enhancement this file does not mention is on (app/src/futari_enhancements.cpp); the startup log line
+# "[enhancements]" lists them.
+
+# Renut's Direct3D-level renderer on Vulkan (plume), as the Switch's on deko3d. Its game shaders are compiled into
+# the executable (Renut's XenosRecomp at build time).
+futari_renderer = "renut"
+renut_gpu_backend = "vulkan"
+futari_renderer_native = true
+
+# Window: fullscreen = false for a window (window_width / window_height set its size).
+fullscreen = true
+
+log_level = "warn"

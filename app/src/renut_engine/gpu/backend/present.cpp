@@ -32,6 +32,16 @@
 #if defined(PLUME_DEKO3D)
 #include <plume_deko3d.h>  // banjo-nx: banjo_renut_capture_raw's format check
 #endif
+#include <shared_mutex>
+// futari-nx (2026-10-26): VK_KHR_present_wait for the display-locked guest vblank off the Switch (Video::WaitPresentShown).
+#if !defined(__SWITCH__) && !defined(__APPLE__)
+#define FUTARI_PRESENT_WAIT 1
+#include <plume_vulkan.h>
+#else
+#define FUTARI_PRESENT_WAIT 0
+#endif
+
+REXCVAR_DECLARE(bool, futari_vblank_display_sync);  // src/me/me_native_system.cpp
 
 // banjo-nx (2026-10-17, deko3d renderer tests): the captures copy the game's frame texture as it is (4-byte formats only,
 // its channels as BGRA), without the scan-out pass: which of the two a wrong capture comes from.
@@ -73,12 +83,21 @@ void ApplyVsync(VideoState &s) {
   RGPU_INFO("Vsync {}", vsync ? "on" : "off");
 }
 
+// futari-nx (2026-10-26): a vkWaitForPresentKHR on another thread (Video::WaitPresentShown) holds this shared; the
+// swapchain's handle is replaced only under it exclusively, and the generation tells a waiter its present ids are of
+// a swapchain gone.
+std::shared_mutex g_present_wait_mutex;
+std::atomic<uint64_t> g_swap_generation{1};
+std::atomic<bool> g_present_wait_on{false};
+
 void RebuildSwapChain(VideoState &s) {
   // Submit rather than abandon an open list: plume tracks layouts on record.
   if (s.list_open)
     detail::SubmitAndAdvance(s, nullptr, nullptr);
   detail::WaitAllSubmitted(s);
   s.swap_framebuffers.clear();
+  std::unique_lock wait_lock(g_present_wait_mutex);
+  g_swap_generation.fetch_add(1, std::memory_order_acq_rel);
   if (!s.swap_chain->resize() || !detail::BuildSwapChainTargets(s)) {
     if (s.swap_chain->getWidth() && s.swap_chain->getHeight())
       RGPU_ERROR("Swapchain resize failed");  // 0x0 while minimized is expected
@@ -510,7 +529,11 @@ struct PresentFence {
 #if defined(PLUME_DEKO3D)
   plume::Deko3DFenceCopy fence;
 #endif
+  uint64_t present_id = 0;    // futari-nx: plume's present id of this present (0: none), for WaitPresentShown
+  uint64_t generation = 0;    // g_swap_generation when it was presented
+  uint64_t submitted_ns = 0;  // steady clock, after the present call
 };
+uint64_t g_last_present_id = 0;  // render thread (State().mutex)
 std::mutex g_present_fence_mutex;
 PresentFence g_present_fences[kPresentFences];
 std::atomic<uint64_t> g_present_count{0};
@@ -536,6 +559,71 @@ int Video::PresentDone(uint64_t index) {
   return plume::Deko3DFenceCopyDone(fence) ? 1 : 0;
 #else
   (void)index;
+  return -1;
+#endif
+}
+
+namespace detail {
+
+bool PresentWaitWanted(plume::RenderDevice *device) {
+#if FUTARI_PRESENT_WAIT
+  const bool on = device && IsVulkan() && device->getCapabilities().presentWait &&
+                  REXCVAR_GET(futari_vblank_display_sync);
+  g_present_wait_on.store(on, std::memory_order_release);
+  RGPU_INFO("Present wait (display-locked guest vblank): {}",
+            on ? "on" : (device && IsVulkan() && !device->getCapabilities().presentWait)
+                            ? "off, the Vulkan driver has no VK_KHR_present_wait"
+                            : "off");
+  return on;
+#else
+  (void)device;
+  return false;
+#endif
+}
+
+void EndPresentWaits() {
+  std::unique_lock lock(g_present_wait_mutex);
+  g_present_wait_on.store(false, std::memory_order_release);
+}
+
+} // namespace detail
+
+bool Video::PresentWaitOn() {
+  return g_present_wait_on.load(std::memory_order_acquire);
+}
+
+int Video::WaitPresentShown(uint64_t index, uint64_t timeout_ns, uint64_t *submitted_ns) {
+#if FUTARI_PRESENT_WAIT
+  if (!index || index > g_present_count.load(std::memory_order_acquire))
+    return -1;
+  PresentFence p;
+  {
+    std::lock_guard lock(g_present_fence_mutex);
+    p = g_present_fences[index % kPresentFences];
+  }
+  if (p.index != index || !p.present_id)
+    return -1;
+  std::shared_lock lock(g_present_wait_mutex);
+  if (!g_present_wait_on.load(std::memory_order_acquire) ||
+      p.generation != g_swap_generation.load(std::memory_order_acquire))
+    return -1;
+  auto &s = State();
+  auto *device = static_cast<plume::VulkanDevice *>(s.device.get());
+  auto *swap_chain = static_cast<plume::VulkanSwapChain *>(s.swap_chain.get());
+  if (!device || !swap_chain || swap_chain->vk == VK_NULL_HANDLE)
+    return -1;
+  const VkResult result = vkWaitForPresentKHR(device->vk, swap_chain->vk, p.present_id, timeout_ns);
+  if (result == VK_TIMEOUT)
+    return 0;
+  if (result != VK_SUCCESS && result != VK_SUBOPTIMAL_KHR)
+    return -1;
+  if (submitted_ns)
+    *submitted_ns = p.submitted_ns;
+  return 1;
+#else
+  (void)index;
+  (void)timeout_ns;
+  (void)submitted_ns;
   return -1;
 #endif
 }
@@ -572,6 +660,21 @@ void Video::Present(const PresentImage *image) {
 #if defined(PLUME_DEKO3D)
     p.fence = plume::Deko3DCopyFence(s.fences[(s.frame + kFramesInFlight - 1) % kFramesInFlight].get());
 #endif
+    p.present_id = 0;
+#if FUTARI_PRESENT_WAIT
+    if (g_present_wait_on.load(std::memory_order_acquire)) {
+      // A present that did not happen (minimized, out of date) left plume's id where it was.
+      const uint64_t id = static_cast<plume::VulkanSwapChain *>(s.swap_chain.get())->currentPresentId;
+      if (id != g_last_present_id) {
+        p.present_id = id;
+        g_last_present_id = id;
+      }
+    }
+#endif
+    p.generation = g_swap_generation.load(std::memory_order_acquire);
+    p.submitted_ns = uint64_t(std::chrono::duration_cast<std::chrono::nanoseconds>(
+                                  std::chrono::steady_clock::now().time_since_epoch())
+                                  .count());
     g_present_count.store(index, std::memory_order_release);
   }
 }
