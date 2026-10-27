@@ -43,6 +43,11 @@
 #include <rex/system/xthread.h>
 #include <rex/system/xtimer.h>
 #include <rex/sys_counters.h>
+#include <rex/filesystem.h>
+#include <rex/platform.h>
+#if REX_PLATFORM_LINUX || REX_PLATFORM_MAC
+#include <dlfcn.h>
+#endif
 
 namespace rex::system {
 
@@ -797,9 +802,34 @@ object_ref<UserModule> KernelState::LoadUserModule(const std::string_view raw_na
     }
 
     rex::platform::DynamicLibrary library_local;
-    if (!library_local.Load(std::filesystem::path(recomp->shared_lib_name),
-                            rex::platform::SymbolResolution::kImmediate)) {
+    // futari-nx (2026-10-26, Linux): the generator names a module's library by its CMake target
+    // (<project>_<module>), which LoadLibrary completes with .dll on Windows. dlopen takes a file name as it is, and
+    // the build writes lib<target>.so (.dylib on macOS) next to the executable: that path first, then the name as
+    // given (a library on the search path).
+    std::filesystem::path library_path(recomp->shared_lib_name);
+#if REX_PLATFORM_LINUX || REX_PLATFORM_MAC
+    if (!library_path.has_extension()) {
+#if REX_PLATFORM_MAC
+      const char* suffix = ".dylib";
+#else
+      const char* suffix = ".so";
+#endif
+      const auto exe_folder = rex::filesystem::GetExecutableFolder();
+      const auto beside = exe_folder / ("lib" + recomp->shared_lib_name + suffix);
+      std::error_code ec;
+      library_path = std::filesystem::is_regular_file(beside, ec)
+                         ? beside
+                         : std::filesystem::path("lib" + recomp->shared_lib_name + suffix);
+    }
+#endif
+    if (!library_local.Load(library_path, rex::platform::SymbolResolution::kImmediate)) {
+#if REX_PLATFORM_LINUX || REX_PLATFORM_MAC
+      const char* why = dlerror();
+      REXSYS_ERROR("Failed to load shared library for module '{}' ({}): {}", recomp->pe_name,
+                   library_path.string(), why ? why : "unknown error");
+#else
       REXSYS_ERROR("Failed to load shared library for module '{}'", recomp->pe_name);
+#endif
     } else {
       auto register_func = reinterpret_cast<runtime::FunctionDispatcher::RegisterFn>(
           library_local.GetRawSymbol("ReXModule_Register"));

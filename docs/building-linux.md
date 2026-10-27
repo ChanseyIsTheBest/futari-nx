@@ -57,6 +57,10 @@ tools/linux/build.sh --iso "/path/to/Mushihimesama Futari.iso"
 tools/linux/package.sh
 ```
 
+A folder the disc was already extracted into (`default.xex` and `media/` at its top) works too:
+`tools/linux/build.sh --game-dir "/path/to/the/folder"`. A `dlc/` folder in it is moved to `out/dlc`, and
+`package.sh` puts it next to the executable.
+
 `build.sh` runs the steps of [building.md](building.md) in their Linux form, each skipped when its output is there:
 
 1. `tools/fetch_thirdparty.py`, the SDK's third-party sources.
@@ -72,6 +76,10 @@ A tree whose `app/generated` was made on another machine (Windows, or before thi
 `--force-codegen`: the generated pch takes the `REX_RELEASE_FORMS` macros at codegen.
 
 `--jobs N` limits the parallel compile jobs when the device runs out of memory.
+
+The app build runs the code generator again once, with the copy of `rexglue` it builds itself (the build re-runs
+codegen whenever the generator is newer than its output); it finds nothing to change and repeats the post-codegen
+steps, a few minutes.
 
 `package.sh` makes `out/futari-nx-linux-arm64/`:
 

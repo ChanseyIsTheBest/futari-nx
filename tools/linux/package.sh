@@ -47,4 +47,9 @@ if [ ! -f "$out/futari.toml" ]; then
 fi
 mkdir -p "$out/game_root"
 cp -a "$root/assets/game_root/." "$out/game_root/"
+# DLC packages (tools/linux/build.sh --game-dir moves a game folder's dlc/ there): installed by the game at its next
+# start.
+if [ -d "$root/out/dlc" ] && [ ! -e "$out/dlc" ]; then
+    cp -a "$root/out/dlc" "$out/dlc"
+fi
 echo "done: $out"

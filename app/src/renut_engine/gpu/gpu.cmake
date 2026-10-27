@@ -332,6 +332,13 @@ function(renut_gpu_setup TARGET)
     if(NOT REXGLUE_PLATFORM_SWITCH)
         target_sources(${TARGET} PRIVATE ${renut_imgui_sources})
         set_source_files_properties(${renut_imgui_sources} PROPERTIES SKIP_PRECOMPILE_HEADERS ON)
+        # futari-nx (2026-10-26, Linux): an executable exports every symbol a shared library it links references, so
+        # these definitions would be exported and would interpose librexruntime.so's own ImGui (one context for the
+        # SDK and the overlay again, the problem the second copy exists to avoid). Hidden, they stay the executable's,
+        # as a DLL's imports keep them apart on Windows.
+        if(NOT WIN32)
+            set_property(SOURCE ${renut_imgui_sources} APPEND PROPERTY COMPILE_OPTIONS -fvisibility=hidden)
+        endif()
     endif()
     target_include_directories(${TARGET} BEFORE PRIVATE "${RENUT_IMGUI_DIR}")
     target_compile_definitions(${TARGET} PRIVATE RENUT_RECOMP)
