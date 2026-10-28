@@ -1609,3 +1609,24 @@ Switch): no PM4 ring, no EDRAM model, no register file rebuilt from packets. Bui
   self-check (run the original on a device copy) before it can be trusted. SA2's other leads: resolves drawn on the 3D
   engine, blend skip, duplicate resolves as aliases; "nothing drew in between" must check edram4_version_ (redirected
   clears are not counted by Drawn()). Futari has 0 rejected draws (no cause 109 from the linear-fetch bug).
+
+## The display queue stuck one image deep (`futari_renut_queue_drain`, 2026-10-28)
+
+Found on Ketsui's console (ketsui-nx, docs/ketsui-notes.md "Frame pacing"), with the same renderer and the same
+2-image swapchain (`futari_renut_double_buffer`). After one image misses its refresh (a load, one slow frame), every
+later image misses it too while the game keeps up 60 fps. Each image's present pass waits for the swapchain image the
+display still shows, and the display gives that one back only when the image before is latched, at that same
+refresh. It looks smooth, but every image is shown a refresh late (about 17 ms of input lag), and
+`futari_vblank_phase_auto` sees every image as a miss. The sign in a log: the `[latency] guest vblank` line's "images
+not finished at their refresh in all" rising by ~600 every 10 s in play. Only a refresh without a new image empties
+the queue.
+
+`futari_renut_queue_drain` (on; a non-CPU row, the master turns it off): the vblank thread counts new images in a row
+not finished at their refresh. After 60 (a second), it skips one guest vblank (`futari_renut_vblank.cpp`,
+`FromDisplay`), so no frame starts in that refresh: the image before still makes it, the queue empties, and every image
+after it is shown a refresh sooner. Not again for 5 s; when the queue fills again within twice that gap, the gap
+doubles, up to 5 minutes (real lateness, which a drain cannot help). The same line counts the drains ("queue drains
+in all"). Ketsui's console run with its form of it (a Swap fence held one vblank, as Ketsui waits for that fence): three
+drains in the boot, the title and the first load, then no late image for the rest of the run, and present to scan-out
+from ~27 ms to 10-11 ms. The user (2026-10-28): "the input lag fix worked for sa2. so put it in mushi and guwange and
+release it without testing".

@@ -118,7 +118,9 @@ model of its EDRAM; the drawing runs on its own thread. On the console a frame t
 4-10 ms of the GPU, out of 16.7. It takes Sonic Adventure 2's (sa2-nx's) CPU work for this renderer too: each draw
 copies only the part of the Direct3D state that changed, so the game's thread spends far less time per draw. Input lag
 is lower: the game reads the controllers as late in its frame as it safely can, its 60 Hz follows the screen's own
-refresh, and the screen shows the newest picture with two images instead of three.
+refresh, and the screen shows the newest picture with two images instead of three. Since 1.0.4, when a picture once
+misses its refresh and every later one would follow it a refresh late, the game skips one frame so the pictures
+catch up again (about 17 ms less lag from then on).
 
 It also compiles the game's code better: the improvements of the code generator and the steps after it from
 [sa2-nx](https://github.com/ChanseyIsTheBest/sa2-nx)'s three CPU rounds (the game's registers kept in the processor's

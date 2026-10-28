@@ -327,6 +327,7 @@ const Entry kTable[] = {
     {"banjo_deko3d_eager_kicks", kGpu, "Renut deko3d, input lag: lists of 100 draws (6 a frame), each submitted at its own kick", "true", "false"},
     {"banjo_late_input", kGpu, "Renut, input lag: the controllers read as late as the render thread's slack allows (only with futari_late_input off)", "true", "false"},
     {"futari_renut_double_buffer", kGpu, "Renut, input lag: a 2-image swapchain (one image less queued before the display)", "true", "false"},
+    {"futari_renut_queue_drain", kGpu, "Renut (Switch), input lag: a display queue stuck one image deep (every image a refresh late) emptied by skipping one guest vblank, once (ketsui-nx's)", "true", "false"},
     // banjo_deko3d_latency_trim is not a row: off by default as banjo-nx's until a console measures it (a row would put
     // it on in the built-in defaults); its own check honours the non-CPU master (banjo_renut_tuning.cpp).
 };

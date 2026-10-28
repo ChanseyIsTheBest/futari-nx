@@ -41,6 +41,7 @@
 #endif
 #include <thread>
 
+#include "cpu/banjo_enhancements.h"  // futari-nx 1.0.4: the masters (futari_renut_queue_drain)
 #include "native/futari_native.h"
 #include "renut_engine/display_sync.h"  // futari-nx: DefaultWindowDisplay
 #include "renut_engine/gpu/backend/video.h"
@@ -64,6 +65,16 @@ REXCVAR_DEFINE_INT32(futari_renut_vblank_core, 2, "Futari/Renut",
                      "Renut's renderer on the Switch: the vblank thread at the render thread's priority "
                      "(0x2C), pinned to this core (-1 = as created: the default priority and core)")
     .range(-1, 2)
+    .lifecycle(rex::cvar::Lifecycle::kInitOnly);
+// futari-nx 1.0.4 (2026-10-28, ketsui-nx's ketsui_renut_queue_drain; the user: "put it in mushi and guwange"): see
+// FromDisplay.
+REXCVAR_DEFINE_BOOL(futari_renut_queue_drain, true, "Futari/Renut",
+                    "Renut on the Switch, input lag: when every new image misses its refresh for a second (the display "
+                    "queue stuck one image deep: with 2 swapchain images each image waits for the one the display gives "
+                    "back at that same refresh), one guest vblank is skipped, once. The game's next frame starts a "
+                    "refresh later, the queue empties, and every image after it is shown a refresh sooner (about 17 ms "
+                    "less input lag). Again at the earliest 5 s later, doubled up to 5 minutes while the queue keeps "
+                    "filling again soon after")
     .lifecycle(rex::cvar::Lifecycle::kInitOnly);
 
 namespace futari::renut_vblank {
@@ -147,6 +158,15 @@ bool FromDisplay() {
   uint32_t good = 0;
   uint64_t presented_at_vsync = renut::gpu::Video::PresentCount();
   uint64_t phase_misses = 0, phase_report = 0;
+  // futari_renut_queue_drain: new images in a row not finished at their refresh; the last drain, the least time to the
+  // next one, the drains so far; the guest vblank of this refresh is skipped.
+  static const bool drain_on = banjo::EnhancementActive(banjo::EnhancementGroup::kNonCpu,
+                                                        REXCVAR_GET(futari_renut_queue_drain));
+  constexpr uint32_t kDrainAfter = 60;
+  constexpr uint64_t kDrainGapNs = 5000000000ull, kDrainGapMaxNs = 300000000000ull;
+  uint32_t late_run = 0;
+  uint64_t last_drain = 0, drain_gap = kDrainGapNs, drains = 0;
+  bool skip_vblank = false;
   while (g_running.load(std::memory_order_acquire)) {
     // 100 ms: should the display stop refreshing, the game still gets a vblank now and then.
     const bool refreshed = R_SUCCEEDED(eventWait(&vsync, 100000000ull));
@@ -157,6 +177,23 @@ bool FromDisplay() {
       presented_at_vsync = presented;
       const int ready = new_image ? renut::gpu::Video::PresentDone(presented) : -1;
       rex::latency::NoteDisplayVsync(ready);
+      // futari_renut_queue_drain: a second of new images all late is the queue one image deep (one late image fills
+      // it, and with 2 images nothing empties it while the game keeps up): this refresh's guest vblank is skipped, so
+      // no frame starts in it. A queue that fills again within twice the gap is real lateness: the gap doubles; else
+      // it starts again at 5 s.
+      if (drain_on && ready == 0 && ++late_run >= kDrainAfter) {
+        const uint64_t at = armTicksToNs(armGetSystemTick());
+        if (!last_drain || at - last_drain >= drain_gap) {
+          drain_gap = last_drain && at - last_drain < 2 * drain_gap ? std::min(drain_gap * 2, kDrainGapMaxNs)
+                                                                     : kDrainGapNs;
+          last_drain = at;
+          skip_vblank = true;
+          ++drains;
+          late_run = 0;
+        }
+      } else if (ready == 1) {
+        late_run = 0;
+      }
       if (phase_auto) {
         const uint64_t at = armTicksToNs(armGetSystemTick());
         if (ceiling_until && at > ceiling_until) {
@@ -176,14 +213,20 @@ bool FromDisplay() {
         if (++phase_report >= 600) {  // every 10 s
           phase_report = 0;
           REXLOG_INFO("[latency] guest vblank {:.2f} ms after the display's refresh (futari_vblank_phase_auto), "
-                      "ceiling {:.2f} ms, {} images not finished at their refresh in all", double(delay_us) / 1000.0,
-                      double(ceiling_us) / 1000.0, phase_misses);
+                      "ceiling {:.2f} ms, {} images not finished at their refresh in all; {} queue drains in all "
+                      "(futari_renut_queue_drain)", double(delay_us) / 1000.0,
+                      double(ceiling_us) / 1000.0, phase_misses, drains);
         }
       }
     }
     // Never two vblanks closer than 8 ms (an event that did not clear would run the game at any speed).
     const uint64_t now = armTicksToNs(armGetSystemTick());
     if (refreshed && last && now - last < 8000000ull) continue;
+    if (skip_vblank) {  // futari_renut_queue_drain: this refresh has no guest vblank
+      skip_vblank = false;
+      last = now;
+      continue;
+    }
     if (delay_us > 0) svcSleepThread(delay_us * 1000);
     last = now;
     Vblank();

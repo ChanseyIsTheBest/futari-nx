@@ -217,3 +217,4 @@ banjo_deko3d_kick_submit = true
 banjo_deko3d_eager_kicks = true
 banjo_late_input = true
 futari_renut_double_buffer = true
+futari_renut_queue_drain = true
